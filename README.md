@@ -21,7 +21,7 @@ DSL contract. Implemented areas include:
 - start, stop, and restart lifecycle behavior
 - group dispatch, group snapshots, broadcast dispatch, context helpers, and kind utilities
 - runtime `ID`, `Name`, and `QualifiedName` helpers
-- runtime event constructors and event/state/transition kind helpers
+- runtime event constructors and inherited event/state/pseudostate/transition kind helpers
 - canonical `Dispatch` export without processed/deferred status payloads
 - per-recipient event metadata ownership for group/broadcast dispatch
 - normalized behavior error tracing in the conformance runner

@@ -69,12 +69,21 @@ defmodule HSM do
   def call_event_kind, do: :call_event
   def error_event_kind, do: :error_event
   def state_kind, do: :state
+  def initial_kind, do: :initial
+  def choice_kind, do: :choice
+  def shallow_history_kind, do: :shallow_history
+  def deep_history_kind, do: :deep_history
+  def pseudostate_kind, do: :pseudostate
   def final_state_kind, do: :final
   def transition_kind, do: :transition
   def external_kind, do: :external
   def internal_kind, do: :internal
   def local_kind, do: :local
   def self_kind, do: :self
+  def attribute_kind, do: :attribute
+  def operation_kind, do: :operation
+  def behavior_kind, do: :behavior
+  def state_machine_kind, do: :state_machine
   def queue(hooks \\ nil), do: Queue.new(hooks)
   def clock(opts \\ []), do: Clock.new(opts)
   def default_clock, do: Clock.default()
@@ -206,12 +215,21 @@ defmodule HSM do
   for name <- [:CallEventKind], do: def(unquote(name)(), do: call_event_kind())
   for name <- [:ErrorEventKind], do: def(unquote(name)(), do: error_event_kind())
   for name <- [:StateKind], do: def(unquote(name)(), do: state_kind())
+  for name <- [:InitialKind], do: def(unquote(name)(), do: initial_kind())
+  for name <- [:ChoiceKind], do: def(unquote(name)(), do: choice_kind())
+  for name <- [:ShallowHistoryKind], do: def(unquote(name)(), do: shallow_history_kind())
+  for name <- [:DeepHistoryKind], do: def(unquote(name)(), do: deep_history_kind())
+  for name <- [:PseudostateKind], do: def(unquote(name)(), do: pseudostate_kind())
   for name <- [:FinalStateKind], do: def(unquote(name)(), do: final_state_kind())
   for name <- [:TransitionKind], do: def(unquote(name)(), do: transition_kind())
   for name <- [:ExternalKind], do: def(unquote(name)(), do: external_kind())
   for name <- [:InternalKind], do: def(unquote(name)(), do: internal_kind())
   for name <- [:LocalKind], do: def(unquote(name)(), do: local_kind())
   for name <- [:SelfKind], do: def(unquote(name)(), do: self_kind())
+  for name <- [:AttributeKind], do: def(unquote(name)(), do: attribute_kind())
+  for name <- [:OperationKind], do: def(unquote(name)(), do: operation_kind())
+  for name <- [:BehaviorKind], do: def(unquote(name)(), do: behavior_kind())
+  for name <- [:StateMachineKind], do: def(unquote(name)(), do: state_machine_kind())
   for name <- [:Queue], do: def(unquote(name)(hooks \\ nil), do: queue(hooks))
   for name <- [:Clock], do: def(unquote(name)(opts \\ []), do: clock(opts))
   for name <- [:DefaultClock], do: def(unquote(name)(), do: default_clock())

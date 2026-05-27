@@ -147,6 +147,11 @@ defmodule HSMTest do
     assert apply(HSM, :ChangeEventKind, []) == :set_event
     assert apply(HSM, :StateKind, []) == :state
     assert apply(HSM, :FinalStateKind, []) == :final
+    assert apply(HSM, :ChoiceKind, []) == :choice
+    assert apply(HSM, :AttributeKind, []) == :attribute
+    assert HSM.is_kind(HSM.final_state_kind(), HSM.state_kind())
+    assert HSM.is_kind(HSM.error_event_kind(), HSM.completion_event_kind())
+    assert HSM.is_kind(HSM.choice_kind(), HSM.pseudostate_kind())
   end
 
   test "canonical Dispatch returns updated instance without status payload" do
