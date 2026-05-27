@@ -31,6 +31,9 @@ defmodule Mix.Tasks.Hsm.Conformance do
                         "history_default",
                         "shallow_history",
                         "deep_history",
+                        "defer",
+                        "queue",
+                        "queue_order",
                         "when",
                         "final",
                         "completion",
@@ -111,6 +114,8 @@ defmodule Mix.Tasks.Hsm.Conformance do
 
   defp run_runtime_case(path, case) do
     {:ok, trace} = Agent.start_link(fn -> [] end)
+    Process.put(:hsm_conformance_deferred, [])
+    Process.put(:hsm_conformance_replay, [])
     model = build_model(case, trace)
     machine = HSM.new(model)
 
@@ -265,7 +270,8 @@ defmodule Mix.Tasks.Hsm.Conformance do
     end
   end
 
-  defp execute_behavior_op(_case, instance, _event, %{"op" => "trace", "value" => value}, trace) do
+  defp execute_behavior_op(_case, instance, event, %{"op" => "trace", "value" => value}, trace) do
+    maybe_append_undefer(trace, event)
     append_trace(trace, %{"type" => "trace", "value" => value})
     instance
   end
@@ -328,13 +334,25 @@ defmodule Mix.Tasks.Hsm.Conformance do
   defp execute_step(machine, %{"op" => "dispatch", "event" => event}, trace, case) do
     event = event_from_value(event)
     old_state = HSM.state(machine)
+    old_deferred = Process.get(:hsm_conformance_deferred, [])
+    Process.put(:hsm_conformance_replay, old_deferred)
     append_trace(trace, %{"type" => "dispatch", "event" => event.name})
 
     if timer_state?(case, old_state) do
       append_trace(trace, %{"type" => "timer_cancelled"})
     end
 
-    HSM.dispatch(machine, event) |> elem(0)
+    {machine, status} = HSM.dispatch(machine, event)
+
+    if status == :deferred do
+      append_trace(trace, %{"type" => "defer", "event" => event.name})
+      Process.put(:hsm_conformance_deferred, old_deferred ++ [event.name])
+    else
+      Process.put(:hsm_conformance_deferred, Process.get(:hsm_conformance_replay, []))
+    end
+
+    Process.put(:hsm_conformance_replay, [])
+    machine
   end
 
   defp execute_step(machine, %{"op" => "set", "attribute" => attr, "value" => value}, trace, case) do
@@ -417,6 +435,19 @@ defmodule Mix.Tasks.Hsm.Conformance do
   defp print_result({:ok, path}), do: Mix.shell().info("ok #{path}")
   defp print_result({:skip, path, reason}), do: Mix.shell().info("skip #{path}: #{reason}")
   defp print_result({:fail, path, reason}), do: Mix.shell().error("fail #{path}: #{reason}")
+
+  defp maybe_append_undefer(trace, %HSM.Event{name: event_name}) do
+    case Process.get(:hsm_conformance_replay, []) do
+      [^event_name | rest] ->
+        append_trace(trace, %{"type" => "undefer", "event" => event_name})
+        Process.put(:hsm_conformance_replay, rest)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp maybe_append_undefer(_trace, _event), do: :ok
 
   defp append_timer_scheduled(trace, case, state_path) do
     if timer_state?(case, state_path) do

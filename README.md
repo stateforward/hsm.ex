@@ -63,7 +63,7 @@ mix hsm.conformance ../hsm/conformance/cases/*.json
 
 The current suite covers core transition flow, nested initial entry, guard
 selection, choice fallback, source-qualified parent transitions, deferral
-replay, history defaults, root completion transitions, `on_call`, timer
+replay/FIFO ordering, history defaults, root completion transitions, `on_call`, timer
 behavior, transition kinds, validation, and snapshots.
 
 The conformance runner executes supported shared JSON cases and exits `77` when
