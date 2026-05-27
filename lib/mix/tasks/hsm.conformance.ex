@@ -34,6 +34,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
                         "defer",
                         "queue",
                         "queue_order",
+                        "reentrancy",
                         "when",
                         "final",
                         "completion",
@@ -123,6 +124,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
     {:ok, trace} = Agent.start_link(fn -> [] end)
     Process.put(:hsm_conformance_deferred, [])
     Process.put(:hsm_conformance_replay, [])
+    Process.put(:hsm_conformance_nested_dispatch, [])
     model = build_model(case, trace)
 
     if Map.has_key?(case, "instances") do
@@ -386,6 +388,20 @@ defmodule Mix.Tasks.Hsm.Conformance do
     instance
   end
 
+  defp execute_behavior_op(
+         _case,
+         instance,
+         _event,
+         %{"op" => "dispatch", "event" => event},
+         trace
+       ) do
+    event = event_from_value(event)
+    append_trace(trace, %{"type" => "dispatch", "event" => event.name})
+    nested = Process.get(:hsm_conformance_nested_dispatch, [])
+    Process.put(:hsm_conformance_nested_dispatch, nested ++ [event])
+    instance
+  end
+
   defp execute_behavior_op(_case, instance, _event, _op, _trace), do: instance
 
   defp execute_step(machine, %{"op" => "start"}, trace, case) do
@@ -416,7 +432,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
     end
 
     Process.put(:hsm_conformance_replay, [])
-    machine
+    drain_nested_dispatch(machine)
   end
 
   defp execute_step(machine, %{"op" => "set", "attribute" => attr, "value" => value}, trace, case) do
@@ -528,6 +544,15 @@ defmodule Mix.Tasks.Hsm.Conformance do
   end
 
   defp execute_multi_step(env, _step, _trace, _case), do: env
+
+  defp drain_nested_dispatch(machine) do
+    nested = Process.get(:hsm_conformance_nested_dispatch, [])
+    Process.put(:hsm_conformance_nested_dispatch, [])
+
+    Enum.reduce(nested, machine, fn event, acc ->
+      HSM.dispatch(acc, event) |> elem(0)
+    end)
+  end
 
   defp event_from_value(name) when is_binary(name), do: %HSM.Event{name: name}
 
