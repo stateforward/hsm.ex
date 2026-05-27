@@ -63,6 +63,7 @@ defmodule HSM.Instance do
   def call(%__MODULE__{} = instance, name, args \\ []) do
     callback = Map.get(instance.model.operations, name)
     event = Event.call(name, args)
+    {instance, _} = dispatch(instance, event)
 
     result =
       if is_function(callback) do
@@ -71,7 +72,6 @@ defmodule HSM.Instance do
         nil
       end
 
-    {instance, _} = dispatch(instance, event)
     {instance, result}
   end
 
@@ -144,7 +144,10 @@ defmodule HSM.Instance do
 
   defp replay_deferred(instance) do
     active_defer = active_deferred_events(instance)
-    {still_deferred, ready} = Enum.split_with(instance.deferred, &(Event.coerce(&1).name in active_defer))
+
+    {still_deferred, ready} =
+      Enum.split_with(instance.deferred, &(Event.coerce(&1).name in active_defer))
+
     %{instance | deferred: still_deferred, queue: ready ++ instance.queue}
   end
 
@@ -154,8 +157,14 @@ defmodule HSM.Instance do
     |> Enum.find_value(fn path ->
       node = instance.model.states[path]
 
-      Enum.find(node.transitions ++ parent_owned_transitions(instance, path), fn transition ->
-        source_matches?(instance, transition) and trigger_matches?(instance, transition, event) and guard_passes?(instance, transition, event)
+      owned =
+        if path == instance.model.root,
+          do: node.transitions ++ instance.model.transitions,
+          else: node.transitions
+
+      Enum.find(owned ++ parent_owned_transitions(instance, path), fn transition ->
+        source_matches?(instance, transition) and trigger_matches?(instance, transition, event) and
+          guard_passes?(instance, transition, event)
       end)
     end)
   end
@@ -177,21 +186,43 @@ defmodule HSM.Instance do
   end
 
   defp trigger_matches?(_instance, %Transition{trigger: nil}, _event), do: false
-  defp trigger_matches?(_instance, %Transition{trigger: {:on, expected}}, %Event{name: actual}), do: expected == actual
 
-  defp trigger_matches?(_instance, %Transition{trigger: {:on_set, expected}}, %Event{kind: :set_event, data: %{name: actual}}),
+  defp trigger_matches?(_instance, %Transition{trigger: {:on, expected}}, %Event{name: actual}),
     do: expected == actual
 
-  defp trigger_matches?(_instance, %Transition{trigger: {:on_call, expected}}, %Event{name: actual}), do: actual == "@call:" <> expected
-  defp trigger_matches?(instance, %Transition{trigger: {:when, fun}}, event), do: truthy?(invoke(fun, instance, event))
-  defp trigger_matches?(_instance, %Transition{trigger: {:after, _}}, %Event{name: "__timer_after__"}), do: true
-  defp trigger_matches?(_instance, %Transition{trigger: {:every, _}}, %Event{name: "__timer_every__"}), do: true
-  defp trigger_matches?(_instance, %Transition{trigger: {:at, _}}, %Event{name: "__timer_at__"}), do: true
+  defp trigger_matches?(_instance, %Transition{trigger: {:on_set, expected}}, %Event{
+         kind: :set_event,
+         data: %{name: actual}
+       }),
+       do: expected == actual
+
+  defp trigger_matches?(_instance, %Transition{trigger: {:on_call, expected}}, %Event{
+         name: actual
+       }), do: actual == "@call:" <> expected
+
+  defp trigger_matches?(instance, %Transition{trigger: {:when, fun}}, event),
+    do: truthy?(invoke(fun, instance, event))
+
+  defp trigger_matches?(_instance, %Transition{trigger: {:after, _}}, %Event{
+         name: "__timer_after__"
+       }), do: true
+
+  defp trigger_matches?(_instance, %Transition{trigger: {:every, _}}, %Event{
+         name: "__timer_every__"
+       }), do: true
+
+  defp trigger_matches?(_instance, %Transition{trigger: {:at, _}}, %Event{name: "__timer_at__"}),
+    do: true
+
   defp trigger_matches?(_instance, _transition, _event), do: false
 
   defp guard_passes?(_instance, %Transition{guard: nil}, _event), do: true
-  defp guard_passes?(instance, %Transition{guard: guard}, event) when is_binary(guard), do: truthy?(invoke(Map.fetch!(instance.model.operations, guard), instance, event))
-  defp guard_passes?(instance, %Transition{guard: guard}, event), do: truthy?(invoke(guard, instance, event))
+
+  defp guard_passes?(instance, %Transition{guard: guard}, event) when is_binary(guard),
+    do: truthy?(invoke(Map.fetch!(instance.model.operations, guard), instance, event))
+
+  defp guard_passes?(instance, %Transition{guard: guard}, event),
+    do: truthy?(invoke(guard, instance, event))
 
   defp take_transition(instance, %Transition{target: nil} = transition, event) do
     instance = run_actions(instance, transition.effects, event)
@@ -199,15 +230,17 @@ defmodule HSM.Instance do
   end
 
   defp take_transition(instance, %Transition{} = transition, event) do
-    target = resolve_dynamic_target(instance, transition.target, event)
+    {target, chained_effects} = resolve_dynamic_target(instance, transition.target, event)
     source = transition.source || instance.state
-    {exit_paths, enter_paths} = transition_paths(instance.model, source, target, transition.kind, instance.state)
+
+    {exit_paths, enter_paths} =
+      transition_paths(instance.model, source, target, transition.kind, instance.state)
 
     instance =
       instance
       |> remember_history(exit_paths)
       |> exit_states(exit_paths, event)
-      |> run_actions(transition.effects, event)
+      |> run_actions(transition.effects ++ chained_effects, event)
       |> enter_states(enter_paths, event)
       |> maybe_enter_default(target, event)
       |> maybe_completion()
@@ -217,25 +250,41 @@ defmodule HSM.Instance do
 
   defp resolve_dynamic_target(instance, target, event) do
     case instance.model.states[target] do
-      %Node{kind: :choice} = node -> select_choice_target(instance, node, event)
-      %Node{kind: :shallow_history} = node -> Map.get(instance.history_shallow, node.parent) || default_history_target(instance, node, event)
-      %Node{kind: :deep_history} = node -> Map.get(instance.history_deep, node.parent) || default_history_target(instance, node, event)
-      _ -> target
+      %Node{kind: :choice} = node -> choice_target(instance, node, event)
+      %Node{kind: :shallow_history} = node -> history_target(instance, node, event, :shallow)
+      %Node{kind: :deep_history} = node -> history_target(instance, node, event, :deep)
+      _ -> {target, []}
     end
   end
 
-  defp select_choice_target(instance, node, event) do
+  defp choice_target(instance, node, event) do
     transition =
       Enum.find(node.transitions, fn transition ->
         guard_passes?(instance, transition, event)
       end)
 
-    transition && transition.target
+    if transition, do: {transition.target, transition.effects}, else: {node.path, []}
   end
 
-  defp default_history_target(instance, node, event) do
-    transition = List.first(node.transitions)
-    transition && resolve_dynamic_target(instance, transition.target, event)
+  defp history_target(instance, node, event, kind) do
+    remembered =
+      case kind do
+        :shallow -> Map.get(instance.history_shallow, node.parent)
+        :deep -> Map.get(instance.history_deep, node.parent)
+      end
+
+    if remembered do
+      {remembered, []}
+    else
+      transition = List.first(node.transitions)
+
+      if transition do
+        {target, effects} = resolve_dynamic_target(instance, transition.target, event)
+        {target, transition.effects ++ effects}
+      else
+        {node.parent, []}
+      end
+    end
   end
 
   defp transition_paths(model, source, target, kind, active_leaf) do
@@ -314,7 +363,14 @@ defmodule HSM.Instance do
   end
 
   defp completion_transition(instance, parent) do
-    instance.model.states[parent].transitions
+    transitions =
+      if parent == instance.model.root do
+        instance.model.states[parent].transitions ++ instance.model.transitions
+      else
+        instance.model.states[parent].transitions
+      end
+
+    transitions
     |> Enum.find(&(&1.trigger == {:on, "FinalEvent"} or &1.trigger == {:on, :completion}))
   end
 
@@ -338,8 +394,13 @@ defmodule HSM.Instance do
     end)
   end
 
-  defp active_path(model, leaf), do: Enum.filter([leaf | ancestors(leaf)], &Map.has_key?(model.states, &1))
-  defp ancestors(path), do: Stream.iterate(DSL.parent(path), &DSL.parent/1) |> Enum.take_while(&(&1 not in [nil, "", "."]))
+  defp active_path(model, leaf),
+    do: Enum.filter([leaf | ancestors(leaf)], &Map.has_key?(model.states, &1))
+
+  defp ancestors(path),
+    do:
+      Stream.iterate(DSL.parent(path), &DSL.parent/1)
+      |> Enum.take_while(&(&1 not in [nil, "", "."]))
 
   defp active_deferred_events(instance) do
     instance.model
@@ -351,13 +412,18 @@ defmodule HSM.Instance do
 
   defp run_actions(instance, actions, event) do
     Enum.reduce(actions, instance, fn action, acc ->
-      case action do
-        name when is_binary(name) -> invoke(Map.fetch!(acc.model.operations, name), acc, event)
-        fun when is_function(fun) -> invoke(fun, acc, event)
+      result =
+        case action do
+          name when is_binary(name) -> invoke(Map.fetch!(acc.model.operations, name), acc, event)
+          fun when is_function(fun) -> invoke(fun, acc, event)
+          _ -> acc
+        end
+
+      case result do
+        %__MODULE__{} = updated -> updated
+        {%__MODULE__{} = updated, _status} -> updated
         _ -> acc
       end
-
-      acc
     end)
   end
 
@@ -372,7 +438,9 @@ defmodule HSM.Instance do
     Map.new(instance.attributes, fn {key, value} -> {instance.model.path <> "/" <> key, value} end)
   end
 
-  defp event_detail(event), do: %{Name: event.name, Kind: event.kind, Target: event.target, Schema: event.schema}
+  defp event_detail(event),
+    do: %{Name: event.name, Kind: event.kind, Target: event.target, Schema: event.schema}
+
   defp unique_id, do: "hsm-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
   defp clone(value), do: :erlang.binary_to_term(:erlang.term_to_binary(value))
 end

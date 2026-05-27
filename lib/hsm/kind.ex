@@ -14,7 +14,9 @@ defmodule HSM.Kind do
     end)
   end
 
-  defp inherited?(%{bases: bases}, base), do: Enum.any?(bases, &(&1 == base or inherited?(&1, base)))
+  defp inherited?(%{bases: bases}, base),
+    do: Enum.any?(bases, &(&1 == base or inherited?(&1, base)))
+
   defp inherited?(_, _), do: false
 
   defp ensure_started do

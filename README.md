@@ -58,5 +58,7 @@ model = apply(HSM, :Define, ["Door", [HSM.initial(HSM.target("closed")), HSM.sta
 mix test
 ```
 
-The current authoring environment did not include `elixir`/`mix`, so tests were
-written but could not be executed during the initial scaffold.
+The current suite covers core transition flow, nested initial entry, guard
+selection, choice fallback, source-qualified parent transitions, deferral
+replay, history defaults, root completion transitions, `on_call`, validation,
+and snapshots.

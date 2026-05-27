@@ -2,7 +2,8 @@ defmodule HSM.Context do
   @moduledoc false
   defstruct machines: %{}
 
-  def register(%__MODULE__{} = ctx, instance), do: %{ctx | machines: Map.put(ctx.machines, instance.id, instance)}
+  def register(%__MODULE__{} = ctx, instance),
+    do: %{ctx | machines: Map.put(ctx.machines, instance.id, instance)}
 
   def dispatch_all(%__MODULE__{} = ctx, event) do
     Enum.reduce(ctx.machines, ctx, fn {_id, machine}, acc ->
@@ -32,7 +33,13 @@ defmodule HSM.Group do
   def new(id, machines), do: %__MODULE__{id: id, machines: machines}
 
   def dispatch(%__MODULE__{} = group, event) do
-    %{group | machines: Enum.map(group.machines, fn machine -> elem(HSM.Instance.dispatch(machine, event), 0) end)}
+    %{
+      group
+      | machines:
+          Enum.map(group.machines, fn machine ->
+            elem(HSM.Instance.dispatch(machine, event), 0)
+          end)
+    }
   end
 
   def snapshot(%__MODULE__{} = group) do

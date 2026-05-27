@@ -3,12 +3,19 @@ defmodule HSM.DSL do
 
   alias HSM.{Model, Node, Transition, ValidationError}
 
-  def partial(kind, name, parts), do: %{__hsm_partial__: true, kind: kind, name: name, parts: parts}
+  def partial(kind, name, parts),
+    do: %{__hsm_partial__: true, kind: kind, name: name, parts: parts}
 
   def define(name, partials) when is_binary(name) do
     validate_name!("model", name)
     root = "/" <> name
-    model = %Model{name: name, path: root, root: root, states: %{root => %Node{name: name, path: root, kind: :state}}}
+
+    model = %Model{
+      name: name,
+      path: root,
+      root: root,
+      states: %{root => %Node{name: name, path: root, kind: :state}}
+    }
 
     model =
       Enum.reduce(partials, model, fn partial, acc ->
@@ -19,11 +26,12 @@ defmodule HSM.DSL do
   end
 
   defp apply_root_partial(model, %{kind: :initial, parts: parts}) do
-    {transition, _} = build_transition(model, model.root, parts, nil)
+    {transition, _} = build_transition(model, model.root, parts, nil, true)
     %{model | initial: %{transition | source: model.root}}
   end
 
-  defp apply_root_partial(model, %{kind: kind} = partial) when kind in [:state, :final, :choice] do
+  defp apply_root_partial(model, %{kind: kind} = partial)
+       when kind in [:state, :final, :choice] do
     add_node(model, model.root, partial)
   end
 
@@ -32,7 +40,8 @@ defmodule HSM.DSL do
     %{model | attributes: Map.put(model.attributes, name, default)}
   end
 
-  defp apply_root_partial(model, {:operation, name, fun}) when is_binary(name) and is_function(fun) do
+  defp apply_root_partial(model, {:operation, name, fun})
+       when is_binary(name) and is_function(fun) do
     validate_name!("operation", name)
     %{model | operations: Map.put(model.operations, name, fun)}
   end
@@ -42,7 +51,8 @@ defmodule HSM.DSL do
     %{model | transitions: model.transitions ++ [transition]}
   end
 
-  defp apply_root_partial(_model, other), do: raise(ValidationError, message: "unsupported model partial #{inspect(other)}")
+  defp apply_root_partial(_model, other),
+    do: raise(ValidationError, message: "unsupported model partial #{inspect(other)}")
 
   defp add_node(model, parent_path, %{kind: kind, name: name, parts: parts}) do
     validate_name!(Atom.to_string(kind), name)
@@ -61,28 +71,40 @@ defmodule HSM.DSL do
     end)
   end
 
-  defp apply_node_partial(model, path, %{kind: kind} = partial) when kind in [:state, :final, :choice, :shallow_history, :deep_history] do
+  defp apply_node_partial(model, path, %{kind: kind} = partial)
+       when kind in [:state, :final, :choice, :shallow_history, :deep_history] do
     add_node(model, path, partial)
   end
 
   defp apply_node_partial(model, path, %{kind: :initial, parts: parts}) do
-    {transition, model} = build_transition(model, path, parts, nil)
+    {transition, model} = build_transition(model, path, parts, nil, true)
     put_in(model.states[path].initial, %{transition | source: path})
   end
 
   defp apply_node_partial(model, path, %{kind: :transition, parts: parts, name: id}) do
-    {transition, model} = build_transition(model, path, parts, id)
+    bare_relative_to_owner = model.states[path].kind in [:choice, :shallow_history, :deep_history]
+    {transition, model} = build_transition(model, path, parts, id, bare_relative_to_owner)
     update_in(model.states[path].transitions, &((&1 || []) ++ [%{transition | owner: path}]))
   end
 
-  defp apply_node_partial(model, path, {:entry, actions}), do: update_in(model.states[path].entry, &((&1 || []) ++ actions))
-  defp apply_node_partial(model, path, {:exit, actions}), do: update_in(model.states[path].exit, &((&1 || []) ++ actions))
-  defp apply_node_partial(model, path, {:activity, actions}), do: update_in(model.states[path].activity, &((&1 || []) ++ actions))
-  defp apply_node_partial(model, path, {:defer, events}), do: update_in(model.states[path].defer, &((&1 || []) ++ Enum.map(events, &event_name/1)))
+  defp apply_node_partial(model, path, {:entry, actions}),
+    do: update_in(model.states[path].entry, &((&1 || []) ++ actions))
+
+  defp apply_node_partial(model, path, {:exit, actions}),
+    do: update_in(model.states[path].exit, &((&1 || []) ++ actions))
+
+  defp apply_node_partial(model, path, {:activity, actions}),
+    do: update_in(model.states[path].activity, &((&1 || []) ++ actions))
+
+  defp apply_node_partial(model, path, {:defer, events}) do
+    event_names = Enum.map(events, fn event -> event_name(event) end)
+    update_in(model.states[path].defer, &((&1 || []) ++ event_names))
+  end
 
   defp apply_node_partial(model, path, part) do
     cond do
-      model.states[path].kind in [:choice, :shallow_history, :deep_history] and transition_part?(part) ->
+      model.states[path].kind in [:choice, :shallow_history, :deep_history] and
+          transition_part?(part) ->
         apply_node_partial(model, path, %{kind: :transition, name: nil, parts: [part]})
 
       true ->
@@ -94,42 +116,67 @@ defmodule HSM.DSL do
   defp transition_part?({:effect, _}), do: true
   defp transition_part?(_), do: false
 
-  defp build_transition(model, owner, parts, id) do
+  defp build_transition(model, owner, parts, id),
+    do: build_transition(model, owner, parts, id, false)
+
+  defp build_transition(model, owner, parts, id, bare_relative_to_owner) do
     path_owner =
       case model.states[owner] do
-        %HSM.Node{kind: kind, parent: parent} when kind in [:choice, :shallow_history, :deep_history] -> parent
-        _ -> owner
+        %HSM.Node{kind: kind, parent: parent}
+        when kind in [:choice, :shallow_history, :deep_history] ->
+          parent
+
+        _ ->
+          owner
       end
 
     transition =
       Enum.reduce(parts, %Transition{id: id, owner: owner}, fn
-        {:source, source}, tr -> %{tr | source: resolve_path(model, path_owner, source)}
-        {:target, target}, tr -> %{tr | target: resolve_path(model, path_owner, target)}
-        {:trigger, trigger}, tr -> %{tr | trigger: normalize_trigger(trigger)}
-        {:guard, guard}, tr -> %{tr | guard: guard}
-        {:effect, effects}, tr -> %{tr | effects: tr.effects ++ List.wrap(effects)}
-        {:kind, kind}, tr when kind in [:external, :internal, :local, :self] -> %{tr | kind: kind}
-        other, _tr -> raise ValidationError, message: "unsupported transition partial #{inspect(other)}"
+        {:source, source}, tr ->
+          %{tr | source: resolve_path(model, path_owner, source)}
+
+        {:target, target}, tr ->
+          %{tr | target: resolve_path(model, path_owner, target, bare_relative_to_owner)}
+
+        {:trigger, trigger}, tr ->
+          %{tr | trigger: normalize_trigger(trigger)}
+
+        {:guard, guard}, tr ->
+          %{tr | guard: guard}
+
+        {:effect, effects}, tr ->
+          %{tr | effects: tr.effects ++ List.wrap(effects)}
+
+        {:kind, kind}, tr when kind in [:external, :internal, :local, :self] ->
+          %{tr | kind: kind}
+
+        other, _tr ->
+          raise ValidationError, message: "unsupported transition partial #{inspect(other)}"
       end)
 
     {%{transition | source: transition.source || owner}, model}
   end
 
   defp normalize_trigger({:on, event}), do: {:on, event_name(event)}
-  defp normalize_trigger({kind, value}) when kind in [:on_set, :on_call, :when, :after, :every, :at], do: {kind, value}
+
+  defp normalize_trigger({kind, value})
+       when kind in [:on_set, :on_call, :when, :after, :every, :at], do: {kind, value}
+
   defp normalize_trigger(other), do: other
 
   defp validate_model!(model) do
     Enum.each(model.states, fn {_path, node} ->
       if node.kind == :final and node.transitions != [] do
-        raise ValidationError, message: "final state #{node.path} cannot have outgoing transitions"
+        raise ValidationError,
+          message: "final state #{node.path} cannot have outgoing transitions"
       end
 
       if node.kind == :choice do
         last = List.last(node.transitions)
 
         if last == nil or last.guard != nil do
-          raise ValidationError, message: "choice #{node.path} last transition must be guardless fallback"
+          raise ValidationError,
+            message: "choice #{node.path} last transition must be guardless fallback"
         end
       end
 
@@ -156,11 +203,16 @@ defmodule HSM.DSL do
   end
 
   def resolve_path(model, owner, path) when is_binary(path) do
+    resolve_path(model, owner, path, false)
+  end
+
+  def resolve_path(model, owner, path, bare_relative_to_owner) when is_binary(path) do
     cond do
       String.starts_with?(path, "/") ->
         normalize(path)
 
-      path == "." or String.starts_with?(path, "./") or String.starts_with?(path, "../") ->
+      bare_relative_to_owner or path == "." or String.starts_with?(path, "./") or
+          String.starts_with?(path, "../") ->
         normalize(join(owner, path))
 
       true ->
