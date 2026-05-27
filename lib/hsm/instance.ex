@@ -124,13 +124,18 @@ defmodule HSM.Instance do
   def dispatch(%__MODULE__{} = instance, %Event{} = event) do
     event = %{event | schema: clone(event.schema)}
 
-    if deferred?(instance, event) do
-      {%{instance | deferred: instance.deferred ++ [event]}, :deferred}
-    else
-      case enqueue_event(instance, event) do
-        {%__MODULE__{} = instance, nil} -> process_event(instance)
-        {%__MODULE__{} = instance, error} -> handle_runtime_error(instance, error)
-      end
+    cond do
+      deferred?(instance, event) ->
+        {%{instance | deferred: instance.deferred ++ [event]}, :deferred}
+
+      default_queue_empty?(instance.queue) ->
+        process_popped_event(instance, event)
+
+      true ->
+        case enqueue_event(instance, event) do
+          {%__MODULE__{} = instance, nil} -> process_event(instance)
+          {%__MODULE__{} = instance, error} -> handle_runtime_error(instance, error)
+        end
     end
   end
 
@@ -178,7 +183,7 @@ defmodule HSM.Instance do
       State: instance.state,
       Attributes: qualify_attributes(instance),
       QueueLen: queue_len(instance),
-      Events: Enum.map(instance.events ++ Queue.events(instance.queue), &event_detail/1)
+      Events: Enum.map(Queue.events(instance.queue), &event_detail/1)
     }
   end
 
@@ -221,8 +226,6 @@ defmodule HSM.Instance do
   end
 
   defp process_popped_event(instance, event) do
-    instance = %{instance | events: instance.events ++ [event]}
-
     instance =
       case select_transition(instance, event) do
         nil -> instance
@@ -252,37 +255,36 @@ defmodule HSM.Instance do
   end
 
   defp select_transition(instance, event) do
-    instance.model
-    |> active_path(instance.state)
+    active_paths = active_path(instance.model, instance.state)
+
+    active_paths
     |> Enum.find_value(fn path ->
-      node = instance.model.states[path]
-
-      owned =
-        if path == instance.model.root,
-          do: node.transitions ++ instance.model.transitions,
-          else: node.transitions
-
-      Enum.find(owned ++ parent_owned_transitions(instance, path), fn transition ->
-        source_matches?(instance, transition) and trigger_matches?(instance, transition, event) and
+      instance.model.transition_candidates
+      |> Map.get_lazy(path, fn -> transition_candidates(instance, path) end)
+      |> Enum.find(fn transition ->
+        trigger_matches?(instance, transition, event) and
           guard_passes?(instance, transition, event)
       end)
     end)
   end
 
-  defp parent_owned_transitions(instance, path) do
-    parent_paths =
-      instance.model
-      |> active_path(path)
-      |> Enum.drop(1)
+  defp transition_candidates(instance, path) do
+    node = instance.model.states[path]
 
-    Enum.flat_map(parent_paths, fn parent ->
-      instance.model.states[parent].transitions
-      |> Enum.filter(&(&1.source == path))
-    end)
-  end
+    owned =
+      if path == instance.model.root,
+        do: node.transitions ++ instance.model.transitions,
+        else: node.transitions
 
-  defp source_matches?(instance, %Transition{source: source}) do
-    source in active_path(instance.model, instance.state)
+    parent_paths = active_path(instance.model, path) |> Enum.drop(1)
+
+    parent_owned =
+      Enum.flat_map(parent_paths, fn parent ->
+        instance.model.states[parent].transitions
+        |> Enum.filter(&(&1.source == path))
+      end)
+
+    owned ++ parent_owned
   end
 
   defp trigger_matches?(_instance, %Transition{trigger: nil}, _event), do: false
@@ -348,7 +350,7 @@ defmodule HSM.Instance do
         elem(resolve_dynamic_target(instance, transition.target, event), 0)
       end
 
-    {exit_paths, _enter_paths} =
+    {exit_paths, path_lca} =
       transition_paths(instance.model, source, path_target, transition.kind, instance.state)
 
     instance =
@@ -358,7 +360,9 @@ defmodule HSM.Instance do
       |> run_actions(transition.effects, event)
 
     {target, chained_effects} = resolve_dynamic_target(instance, transition.target, event)
-    enter_paths = path_from_lca(target, DSL.lca(source, target))
+
+    enter_lca = if target == path_target, do: path_lca, else: DSL.lca(source, target)
+    enter_paths = path_from_lca(instance.model, target, enter_lca)
 
     instance =
       instance
@@ -419,10 +423,10 @@ defmodule HSM.Instance do
   defp transition_paths(model, source, target, kind, active_leaf) do
     cond do
       kind == :internal ->
-        {[], []}
+        {[], source}
 
       kind == :self ->
-        {[active_leaf], [target]}
+        {[active_leaf], DSL.lca(source, target)}
 
       true ->
         lca = DSL.lca(source, target)
@@ -431,16 +435,14 @@ defmodule HSM.Instance do
           active_path(model, active_leaf)
           |> Enum.take_while(&(&1 != lca))
 
-        enter_paths =
-          path_from_lca(target, lca)
-
-        {exit_paths, enter_paths}
+        {exit_paths, lca}
     end
   end
 
-  defp path_from_lca(target, lca) do
-    Stream.iterate(target, &DSL.parent/1)
-    |> Enum.take_while(&(&1 not in [nil, "", ".", lca]))
+  defp path_from_lca(model, target, lca) do
+    model
+    |> active_path(target)
+    |> Enum.take_while(&(&1 != lca))
     |> Enum.reverse()
   end
 
@@ -532,14 +534,22 @@ defmodule HSM.Instance do
   end
 
   defp active_path(model, leaf),
-    do: Enum.filter([leaf | ancestors(leaf)], &Map.has_key?(model.states, &1))
+    do:
+      Map.get(model.active_paths, leaf) ||
+        Enum.filter([leaf | ancestors(leaf)], &Map.has_key?(model.states, &1))
 
   defp ancestors(path),
     do:
       Stream.iterate(DSL.parent(path), &DSL.parent/1)
       |> Enum.take_while(&(&1 not in [nil, "", "."]))
 
-  defp active_deferred_events(instance) do
+  defp active_deferred_events(instance),
+    do:
+      Map.get_lazy(instance.model.active_defers, instance.state, fn ->
+        active_deferred_events_fallback(instance)
+      end)
+
+  defp active_deferred_events_fallback(instance) do
     instance.model
     |> active_path(instance.state)
     |> Enum.flat_map(&instance.model.states[&1].defer)
@@ -746,6 +756,12 @@ defmodule HSM.Instance do
     }
 
   defp unique_id, do: "hsm-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+  defp clone(nil), do: nil
+
+  defp clone(value)
+       when is_boolean(value) or is_number(value) or is_atom(value) or is_binary(value),
+       do: value
+
   defp clone(value), do: :erlang.binary_to_term(:erlang.term_to_binary(value))
 
   defp value_matches_type?(_value, :any), do: true
@@ -775,6 +791,8 @@ defmodule HSM.Instance do
   defp queue_empty?(instance), do: Queue.empty?(instance.queue, instance)
   defp queue_len(instance), do: Queue.len(instance.queue, instance)
   defp reset_queue(%Queue{hooks: hooks}), do: Queue.new(if(hooks, do: hooks, else: nil))
+  defp default_queue_empty?(%Queue{regular: [], completion: [], hooks: nil}), do: true
+  defp default_queue_empty?(_queue), do: false
 
   defp handle_runtime_error(instance, %ValidationError{} = error),
     do: handle_runtime_error(instance, error.message)

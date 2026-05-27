@@ -204,8 +204,60 @@ defmodule HSM.DSL do
       end
     end)
 
-    model
+    index_model(model)
   end
+
+  defp index_model(model) do
+    model = %{model | active_paths: active_paths(model)}
+
+    %{
+      model
+      | active_defers: active_defers(model),
+        transition_candidates: transition_candidates(model)
+    }
+  end
+
+  defp active_paths(model) do
+    Map.new(model.states, fn {path, _node} ->
+      {path, Enum.filter([path | path_ancestors(path)], &Map.has_key?(model.states, &1))}
+    end)
+  end
+
+  defp active_defers(model) do
+    Map.new(model.states, fn {path, _node} ->
+      defers =
+        model.active_paths
+        |> Map.fetch!(path)
+        |> Enum.flat_map(&model.states[&1].defer)
+
+      {path, defers}
+    end)
+  end
+
+  defp transition_candidates(model) do
+    Map.new(model.states, fn {path, node} ->
+      owned =
+        if path == model.root,
+          do: node.transitions ++ model.transitions,
+          else: node.transitions
+
+      parent_owned =
+        model.active_paths
+        |> Map.fetch!(path)
+        |> Enum.drop(1)
+        |> Enum.flat_map(fn parent ->
+          model.states[parent].transitions
+          |> Enum.filter(&(&1.source == path))
+        end)
+
+      {path, owned ++ parent_owned}
+    end)
+  end
+
+  defp path_ancestors(path),
+    do:
+      Stream.iterate(parent(path), &parent/1)
+      |> Enum.take_while(&(&1 not in [nil, "", "."]))
 
   def resolve_path(model, owner, path) when is_binary(path) do
     resolve_path(model, owner, path, false)
