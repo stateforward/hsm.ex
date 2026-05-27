@@ -264,8 +264,8 @@ defmodule HSM.Instance do
 
     active_paths
     |> Enum.find_value(fn path ->
-      instance.model.transition_candidates
-      |> Map.get_lazy(path, fn -> transition_candidates(instance, path) end)
+      instance
+      |> transition_candidates(path)
       |> Enum.find(fn transition ->
         trigger_matches?(instance, transition, event) and
           guard_passes?(instance, transition, event)
@@ -274,6 +274,13 @@ defmodule HSM.Instance do
   end
 
   defp transition_candidates(instance, path) do
+    case Map.fetch(instance.model.transition_candidates, path) do
+      {:ok, candidates} -> candidates
+      :error -> build_transition_candidates(instance, path)
+    end
+  end
+
+  defp build_transition_candidates(instance, path) do
     node = instance.model.states[path]
 
     owned =
@@ -552,10 +559,14 @@ defmodule HSM.Instance do
       |> Enum.take_while(&(&1 not in [nil, "", "."]))
 
   defp active_deferred_events(instance),
-    do:
-      Map.get_lazy(instance.model.active_defers, instance.state, fn ->
-        active_deferred_events_fallback(instance)
-      end)
+    do: active_deferred_events(instance, instance.state)
+
+  defp active_deferred_events(instance, state) do
+    case Map.fetch(instance.model.active_defers, state) do
+      {:ok, events} -> events
+      :error -> active_deferred_events_fallback(instance)
+    end
+  end
 
   defp active_deferred_events_fallback(instance) do
     instance.model
@@ -566,39 +577,47 @@ defmodule HSM.Instance do
   defp deferred?(instance, event), do: event.name in active_deferred_events(instance)
 
   defp schedule_timers(instance, path) do
-    timer_transitions =
-      Map.get_lazy(instance.model.timer_transitions, path, fn ->
-        timer_transitions(instance, path)
-      end)
+    case timer_transitions(instance, path) do
+      [] ->
+        instance
 
-    timers =
-      timer_transitions
-      |> Enum.map(fn transition ->
-        {kind, value} = transition.trigger
-        interval = timer_value(instance, value)
-        duration = timer_duration(instance.logical_time, kind, interval)
-        timer_id = unique_id()
+      timer_transitions ->
+        timers =
+          Enum.map(timer_transitions, fn transition ->
+            {kind, value} = transition.trigger
+            interval = timer_value(instance, value)
+            duration = timer_duration(instance.logical_time, kind, interval)
+            timer_id = unique_id()
 
-        timer =
-          %{
-            id: timer_id,
-            ref: nil,
-            source: path,
-            transition: transition,
-            kind: kind,
-            interval: interval,
-            duration: duration,
-            clock_wait: Clock.wait(instance.clock, duration, %{instance: instance, path: path}),
-            due: timer_due(instance.logical_time, kind, interval)
-          }
+            timer =
+              %{
+                id: timer_id,
+                ref: nil,
+                source: path,
+                transition: transition,
+                kind: kind,
+                interval: interval,
+                duration: duration,
+                clock_wait:
+                  Clock.wait(instance.clock, duration, %{instance: instance, path: path}),
+                due: timer_due(instance.logical_time, kind, interval)
+              }
 
-        arm_timer(timer, instance)
-      end)
+            arm_timer(timer, instance)
+          end)
 
-    %{instance | timers: instance.timers ++ timers}
+        %{instance | timers: instance.timers ++ timers}
+    end
   end
 
   defp timer_transitions(instance, path) do
+    case Map.fetch(instance.model.timer_transitions, path) do
+      {:ok, transitions} -> transitions
+      :error -> build_timer_transitions(instance, path)
+    end
+  end
+
+  defp build_timer_transitions(instance, path) do
     instance.model.states[path].transitions
     |> Enum.filter(fn transition -> timer_trigger?(transition.trigger) end)
   end
