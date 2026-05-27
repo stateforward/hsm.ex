@@ -361,6 +361,29 @@ defmodule HSMTest do
            ]
   end
 
+  test "context dispatch_all returns updated immutable machines" do
+    model =
+      HSM.define("Broadcast", [
+        HSM.initial(HSM.target("idle")),
+        HSM.state("idle", [
+          HSM.transition([HSM.on("go"), HSM.target("done")])
+        ]),
+        HSM.state("done")
+      ])
+
+    one = HSM.start(HSM.new(model, HSM.Config.new(id: "one")))
+    two = HSM.start(HSM.new(model, HSM.Config.new(id: "two")))
+
+    ctx =
+      %HSM.Context{}
+      |> HSM.Context.register(one)
+      |> HSM.Context.register(two)
+      |> HSM.dispatch_all("go")
+
+    assert HSM.state(ctx.machines["one"]) == "/Broadcast/done"
+    assert HSM.state(ctx.machines["two"]) == "/Broadcast/done"
+  end
+
   test "invalid names and unresolved targets fail validation" do
     assert_raise HSM.ValidationError, ~r/cannot contain/, fn ->
       HSM.define("Bad/Name", [])

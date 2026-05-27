@@ -6,23 +6,29 @@ defmodule HSM.Context do
     do: %{ctx | machines: Map.put(ctx.machines, instance.id, instance)}
 
   def dispatch_all(%__MODULE__{} = ctx, event) do
-    Enum.reduce(ctx.machines, ctx, fn {_id, machine}, acc ->
-      {_machine, _result} = HSM.Instance.dispatch(machine, event)
-      acc
-    end)
+    machines =
+      Map.new(ctx.machines, fn {id, machine} ->
+        {updated, _result} = HSM.Instance.dispatch(machine, event)
+        {id, updated}
+      end)
+
+    %{ctx | machines: machines}
   end
 
   def dispatch_to(%__MODULE__{} = ctx, event, ids) do
     ids = MapSet.new(ids)
 
-    Enum.reduce(ctx.machines, ctx, fn {id, machine}, acc ->
-      if MapSet.member?(ids, id) do
-        {_machine, _result} = HSM.Instance.dispatch(machine, event)
-        acc
-      else
-        acc
-      end
-    end)
+    machines =
+      Map.new(ctx.machines, fn {id, machine} ->
+        if MapSet.member?(ids, id) do
+          {updated, _result} = HSM.Instance.dispatch(machine, event)
+          {id, updated}
+        else
+          {id, machine}
+        end
+      end)
+
+    %{ctx | machines: machines}
   end
 end
 

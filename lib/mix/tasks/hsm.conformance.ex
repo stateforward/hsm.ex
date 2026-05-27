@@ -50,7 +50,9 @@ defmodule Mix.Tasks.Hsm.Conformance do
                         "cancellation",
                         "lifecycle",
                         "restart",
-                        "stop"
+                        "stop",
+                        "group",
+                        "broadcast"
                       ])
 
   @impl Mix.Task
@@ -120,15 +122,44 @@ defmodule Mix.Tasks.Hsm.Conformance do
     Process.put(:hsm_conformance_deferred, [])
     Process.put(:hsm_conformance_replay, [])
     model = build_model(case, trace)
-    machine = HSM.new(model)
 
-    machine =
-      Enum.reduce(case["script"], machine, fn step, acc ->
-        execute_step(acc, step, trace, case)
+    if Map.has_key?(case, "instances") do
+      run_multi_runtime_case(path, case, trace, model)
+    else
+      machine = HSM.new(model)
+
+      machine =
+        Enum.reduce(case["script"], machine, fn step, acc ->
+          execute_step(acc, step, trace, case)
+        end)
+
+      append_trace(trace, %{"type" => "stable", "state" => HSM.state(machine)})
+      assert_expect(case["expect"], machine, Agent.get(trace, & &1))
+      {:ok, path}
+    end
+  end
+
+  defp run_multi_runtime_case(path, case, trace, model) do
+    machines =
+      Map.new(case["instances"] || [], fn %{"id" => id} ->
+        {id, HSM.new(model, HSM.Config.new(id: id))}
       end)
 
-    append_trace(trace, %{"type" => "stable", "state" => HSM.state(machine)})
-    assert_expect(case["expect"], machine, Agent.get(trace, & &1))
+    groups =
+      Map.new(case["groups"] || [], fn %{"id" => id, "members" => members} ->
+        {id, members}
+      end)
+
+    env = %{machines: machines, groups: groups, snapshots: %{}, stable: nil}
+
+    env =
+      Enum.reduce(case["script"], env, fn step, acc ->
+        execute_multi_step(acc, step, trace, case)
+      end)
+
+    stable = env.stable || first_state(env.machines)
+    append_trace(trace, %{"type" => "stable", "state" => stable})
+    assert_multi_expect(case["expect"], env, Agent.get(trace, & &1))
     {:ok, path}
   end
 
@@ -404,6 +435,71 @@ defmodule Mix.Tasks.Hsm.Conformance do
 
   defp execute_step(machine, _step, _trace, _case), do: machine
 
+  defp execute_multi_step(env, %{"op" => "start", "instance" => id}, _trace, _case) do
+    update_in(env.machines[id], &HSM.start/1)
+  end
+
+  defp execute_multi_step(env, %{"op" => "dispatch_all", "event" => event}, trace, _case) do
+    event = event_from_value(event)
+    append_trace(trace, %{"type" => "dispatch", "event" => event.name, "target" => "all"})
+
+    machines =
+      Map.new(env.machines, fn {id, machine} ->
+        {updated, _status} = HSM.dispatch(machine, event)
+        {id, updated}
+      end)
+
+    %{env | machines: machines, stable: "all"}
+  end
+
+  defp execute_multi_step(
+         env,
+         %{"op" => "group_dispatch", "group" => group_id, "event" => event},
+         trace,
+         _case
+       ) do
+    event = event_from_value(event)
+    append_trace(trace, %{"type" => "dispatch", "event" => event.name, "target" => group_id})
+    members = Map.fetch!(env.groups, group_id)
+
+    machines =
+      Enum.reduce(members, env.machines, fn id, acc ->
+        {updated, _status} = HSM.dispatch(Map.fetch!(acc, id), event)
+        Map.put(acc, id, updated)
+      end)
+
+    %{env | machines: machines, stable: "group:" <> group_id}
+  end
+
+  defp execute_multi_step(
+         env,
+         %{"op" => "dispatch_to", "event" => event, "instance" => id},
+         trace,
+         _case
+       ) do
+    event = event_from_value(event)
+    append_trace(trace, %{"type" => "dispatch", "event" => event.name, "target" => id})
+    {updated, _status} = HSM.dispatch(Map.fetch!(env.machines, id), event)
+    %{env | machines: Map.put(env.machines, id, updated), stable: id}
+  end
+
+  defp execute_multi_step(env, %{"op" => "snapshot", "group" => group_id}, trace, _case) do
+    append_trace(trace, %{"type" => "snapshot", "group" => group_id})
+
+    members =
+      env.groups
+      |> Map.fetch!(group_id)
+      |> Map.new(fn id -> {id, HSM.state(Map.fetch!(env.machines, id))} end)
+
+    %{
+      env
+      | snapshots: Map.put(env.snapshots, group_id, %{"members" => members}),
+        stable: "group:" <> group_id
+    }
+  end
+
+  defp execute_multi_step(env, _step, _trace, _case), do: env
+
   defp event_from_value(name) when is_binary(name), do: %HSM.Event{name: name}
   defp event_from_value(%{"name" => name} = map), do: %HSM.Event{name: name, data: map["data"]}
 
@@ -418,6 +514,37 @@ defmodule Mix.Tasks.Hsm.Conformance do
          "trace mismatch:\nactual: #{inspect(trace)}\nexpected: #{inspect(expect["trace"])}"}
       )
     end
+  end
+
+  defp assert_multi_expect(expect, env, trace) do
+    Enum.each(expect["states"] || %{}, fn {id, expected_state} ->
+      actual = HSM.state(Map.fetch!(env.machines, id))
+
+      if actual != expected_state do
+        throw({:assertion, "state #{id} mismatch: got #{actual}, want #{expected_state}"})
+      end
+    end)
+
+    if Map.has_key?(expect, "snapshots") and env.snapshots != expect["snapshots"] do
+      throw(
+        {:assertion,
+         "snapshot mismatch:\nactual: #{inspect(env.snapshots)}\nexpected: #{inspect(expect["snapshots"])}"}
+      )
+    end
+
+    if expect["trace"] && trace != expect["trace"] do
+      throw(
+        {:assertion,
+         "trace mismatch:\nactual: #{inspect(trace)}\nexpected: #{inspect(expect["trace"])}"}
+      )
+    end
+  end
+
+  defp first_state(machines) do
+    machines
+    |> Map.values()
+    |> List.first()
+    |> HSM.state()
   end
 
   defp append_trace(trace, event), do: Agent.update(trace, &(&1 ++ [event]))

@@ -19,10 +19,10 @@ DSL contract. Implemented areas include:
 - deterministic logical-time timers via `HSM.tick/2`
 - external, internal, local, and self transition kinds
 - start, stop, and restart lifecycle behavior
-- groups, context dispatch helpers, and kind utilities
+- group dispatch, group snapshots, broadcast dispatch, context helpers, and kind utilities
 
-Async activity cancellation, custom runtime queues/clocks, broadcast/group
-conformance, and error-event propagation are still incomplete.
+Async activity cancellation, custom runtime queues/clocks, event ownership, and
+error-event propagation are still incomplete.
 
 ## Usage
 
@@ -66,6 +66,8 @@ The current suite covers core transition flow, nested initial entry, guard
 selection, choice fallback, source-qualified parent transitions, deferral
 replay/FIFO ordering, history defaults, root completion transitions, `on_call`, timer
 behavior, transition kinds, lifecycle restart/stop, validation, and snapshots.
+Shared conformance also covers group dispatch, group snapshots, and broadcast
+dispatch for the supported immutable instance API.
 
 The conformance runner executes supported shared JSON cases and exits `77` when
 all requested cases are explicit unsupported-feature skips.
