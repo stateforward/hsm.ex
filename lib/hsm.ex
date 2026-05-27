@@ -66,6 +66,9 @@ defmodule HSM do
   def get(instance, name), do: Instance.get(instance, name)
   def set(instance, name, value), do: Instance.set(instance, name, value)
   def current_state(instance), do: Instance.state(instance)
+  def id(%Instance{} = instance), do: instance.id
+  def name(%Instance{} = instance), do: instance.name
+  def qualified_name(%Instance{} = instance), do: instance.name
   def take_snapshot(instance), do: Instance.snapshot(instance)
   def take_snapshot(_ctx, instance), do: Instance.snapshot(instance)
 
@@ -152,6 +155,12 @@ defmodule HSM do
 
   for name <- [:Set],
       do: def(unquote(name)(instance, attr_name, value), do: set(instance, attr_name, value))
+
+  for name <- [:ID], do: def(unquote(name)(instance), do: id(instance))
+  for name <- [:Name], do: def(unquote(name)(instance), do: name(instance))
+
+  for name <- [:QualifiedName],
+      do: def(unquote(name)(instance), do: qualified_name(instance))
 
   for name <- [:MakeGroup],
       do: def(unquote(name)(id_or_first, machines \\ []), do: make_group(id_or_first, machines))

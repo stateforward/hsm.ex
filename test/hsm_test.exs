@@ -506,6 +506,25 @@ defmodule HSMTest do
     assert HSM.state(machine) == "/Clocked/done"
   end
 
+  test "config id and name are observable through runtime helpers" do
+    model =
+      HSM.define("Named", [
+        HSM.initial(HSM.target("idle")),
+        HSM.state("idle")
+      ])
+
+    machine =
+      HSM.new(model, HSM.Config.new(ID: "alpha", Name: "/RuntimeName"))
+      |> HSM.start()
+
+    assert HSM.id(machine) == "alpha"
+    assert HSM.name(machine) == "/RuntimeName"
+    assert HSM.qualified_name(machine) == "/RuntimeName"
+    assert apply(HSM, :ID, [machine]) == "alpha"
+    assert apply(HSM, :Name, [machine]) == "/RuntimeName"
+    assert apply(HSM, :QualifiedName, [machine]) == "/RuntimeName"
+  end
+
   test "dispatch clones event metadata so caller-owned event is unchanged" do
     model =
       HSM.define("Ownership", [

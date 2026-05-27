@@ -20,6 +20,7 @@ DSL contract. Implemented areas include:
 - external, internal, local, and self transition kinds
 - start, stop, and restart lifecycle behavior
 - group dispatch, group snapshots, broadcast dispatch, context helpers, and kind utilities
+- runtime `ID`, `Name`, and `QualifiedName` helpers
 - per-recipient event metadata ownership for group/broadcast dispatch
 - normalized behavior error tracing in the conformance runner
 - nested dispatch queue reentrancy with FIFO-after-current ordering
