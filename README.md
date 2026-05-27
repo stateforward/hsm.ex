@@ -14,13 +14,14 @@ DSL contract. Implemented areas include:
 - model definition, states, final states, transitions, initial transitions
 - nested state entry/exit ordering
 - guards, effects, entry actions, exit actions, operation references
-- attributes, `on_set`, `on_call`, and predicate `when`
+- typed attributes, runtime type validation, `on_set`, `on_call`, and predicate `when`
 - choice, shallow history, deep history, deferral, completion, snapshots
 - deterministic logical-time timers via `HSM.tick/2`
 - external, internal, local, and self transition kinds
 - start, stop, and restart lifecycle behavior
 - group dispatch, group snapshots, broadcast dispatch, context helpers, and kind utilities
 - runtime `ID`, `Name`, and `QualifiedName` helpers
+- runtime event constructors and event/state/transition kind helpers
 - per-recipient event metadata ownership for group/broadcast dispatch
 - normalized behavior error tracing in the conformance runner
 - nested dispatch queue reentrancy with FIFO-after-current ordering
@@ -74,7 +75,8 @@ Shared conformance also covers group dispatch, group snapshots, broadcast
 dispatch, event ownership, nested dispatch reentrancy, and normalized behavior
 errors for the supported immutable instance API. Local ExUnit coverage exercises
 custom queue hooks, runtime-priority queue events, synchronous hook validation,
-clock hooks, deterministic async ordering, and cancellable activity handles.
+clock hooks, typed attribute writes, event/kind helpers, deterministic async
+ordering, and cancellable activity handles.
 
 The conformance runner executes supported shared JSON cases and exits `77` when
 all requested cases are explicit unsupported-feature skips.

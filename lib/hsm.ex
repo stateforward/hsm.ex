@@ -50,8 +50,31 @@ defmodule HSM do
   def exit(actions), do: {:exit, List.wrap(actions)}
   def activity(actions), do: {:activity, List.wrap(actions)}
   def defer(events), do: {:defer, List.wrap(events)}
-  def attribute(name, default \\ nil), do: {:attribute, name, default}
+  def attribute(name, default \\ nil)
+
+  def attribute(name, value) do
+    if known_type?(value),
+      do: {:attribute, name, value, nil},
+      else: {:attribute, name, inferred_type(value), value}
+  end
+
+  def attribute(name, type, default), do: {:attribute, name, type, default}
   def operation(name, fun), do: {:operation, name, fun}
+  def event(name, opts \\ []), do: Event.new(name, opts)
+  def completion_event(name \\ "FinalEvent", data \\ nil), do: Event.completion(name, data)
+  def event_kind, do: :event
+  def time_event_kind, do: :timer_event
+  def completion_event_kind, do: :completion_event
+  def change_event_kind, do: :set_event
+  def call_event_kind, do: :call_event
+  def error_event_kind, do: :error_event
+  def state_kind, do: :state
+  def final_state_kind, do: :final
+  def transition_kind, do: :transition
+  def external_kind, do: :external
+  def internal_kind, do: :internal
+  def local_kind, do: :local
+  def self_kind, do: :self
   def queue(hooks \\ nil), do: Queue.new(hooks)
   def clock(opts \\ []), do: Clock.new(opts)
   def default_clock, do: Clock.default()
@@ -82,6 +105,32 @@ defmodule HSM do
 
   def make_kind(base_kinds \\ []), do: Kind.make(List.wrap(base_kinds))
   def is_kind(kind, base_kinds), do: Kind.is_kind(kind, List.wrap(base_kinds))
+
+  defp inferred_type(value) when is_integer(value), do: :integer
+  defp inferred_type(value) when is_float(value), do: :float
+  defp inferred_type(value) when is_boolean(value), do: :boolean
+  defp inferred_type(value) when is_binary(value), do: :binary
+  defp inferred_type(value) when is_atom(value), do: :atom
+  defp inferred_type(value) when is_list(value), do: :list
+  defp inferred_type(value) when is_map(value), do: :map
+  defp inferred_type(_value), do: :any
+
+  defp known_type?(type)
+       when type in [
+              :any,
+              :integer,
+              :float,
+              :number,
+              :boolean,
+              :binary,
+              :string,
+              :atom,
+              :list,
+              :map
+            ],
+       do: true
+
+  defp known_type?(_type), do: false
 
   for name <- [:Define],
       do: def(unquote(name)(model_name, partials \\ []), do: define(model_name, partials))
@@ -133,7 +182,36 @@ defmodule HSM do
   for name <- [:Attribute],
       do: def(unquote(name)(attr_name, default \\ nil), do: attribute(attr_name, default))
 
+  for name <- [:Attribute],
+      do:
+        def(unquote(name)(attr_name, attr_type, default),
+          do: attribute(attr_name, attr_type, default)
+        )
+
   for name <- [:Operation], do: def(unquote(name)(op_name, fun), do: operation(op_name, fun))
+
+  for name <- [:Event],
+      do: def(unquote(name)(event_name, opts \\ []), do: event(event_name, opts))
+
+  for name <- [:CompletionEvent],
+      do:
+        def(unquote(name)(event_name \\ "FinalEvent", data \\ nil),
+          do: completion_event(event_name, data)
+        )
+
+  for name <- [:EventKind], do: def(unquote(name)(), do: event_kind())
+  for name <- [:TimeEventKind], do: def(unquote(name)(), do: time_event_kind())
+  for name <- [:CompletionEventKind], do: def(unquote(name)(), do: completion_event_kind())
+  for name <- [:ChangeEventKind], do: def(unquote(name)(), do: change_event_kind())
+  for name <- [:CallEventKind], do: def(unquote(name)(), do: call_event_kind())
+  for name <- [:ErrorEventKind], do: def(unquote(name)(), do: error_event_kind())
+  for name <- [:StateKind], do: def(unquote(name)(), do: state_kind())
+  for name <- [:FinalStateKind], do: def(unquote(name)(), do: final_state_kind())
+  for name <- [:TransitionKind], do: def(unquote(name)(), do: transition_kind())
+  for name <- [:ExternalKind], do: def(unquote(name)(), do: external_kind())
+  for name <- [:InternalKind], do: def(unquote(name)(), do: internal_kind())
+  for name <- [:LocalKind], do: def(unquote(name)(), do: local_kind())
+  for name <- [:SelfKind], do: def(unquote(name)(), do: self_kind())
   for name <- [:Queue], do: def(unquote(name)(hooks \\ nil), do: queue(hooks))
   for name <- [:Clock], do: def(unquote(name)(opts \\ []), do: clock(opts))
   for name <- [:DefaultClock], do: def(unquote(name)(), do: default_clock())
@@ -219,14 +297,54 @@ defmodule HSM.Event do
             qualified_name: "",
             schema: nil
 
+  def new(name, opts \\ []) when is_binary(name) do
+    opts = if is_map(opts), do: Map.to_list(opts), else: opts
+    struct(__MODULE__, Keyword.merge([name: name], normalize_keys(opts)))
+  end
+
   def coerce(%__MODULE__{} = event), do: %{event | schema: clone(event.schema)}
   def coerce(name) when is_binary(name), do: %__MODULE__{name: name}
   def coerce(%{name: name} = map), do: struct(__MODULE__, Map.put(map, :name, name))
-  def completion, do: %__MODULE__{name: "FinalEvent", kind: :completion_event}
+
+  def completion(name \\ "FinalEvent", data \\ nil),
+    do: %__MODULE__{name: name, data: data, kind: :completion_event}
+
   def call(name, args), do: %__MODULE__{name: "@call:" <> name, data: args, kind: :call_event}
 
   def set(name, value),
     do: %__MODULE__{name: "@set:" <> name, data: %{name: name, value: value}, kind: :set_event}
+
+  defp normalize_keys(opts) do
+    Enum.map(opts, fn
+      {:Name, value} -> {:name, value}
+      {:Data, value} -> {:data, value}
+      {:Kind, value} -> {:kind, value}
+      {:ID, value} -> {:id, value}
+      {:Source, value} -> {:source, value}
+      {:Target, value} -> {:target, value}
+      {:QualifiedName, value} -> {:qualified_name, value}
+      {:Schema, value} -> {:schema, value}
+      {"Name", value} -> {:name, value}
+      {"Data", value} -> {:data, value}
+      {"Kind", value} -> {:kind, value}
+      {"ID", value} -> {:id, value}
+      {"Source", value} -> {:source, value}
+      {"Target", value} -> {:target, value}
+      {"QualifiedName", value} -> {:qualified_name, value}
+      {"Schema", value} -> {:schema, value}
+      {"name", value} -> {:name, value}
+      {"data", value} -> {:data, value}
+      {"kind", value} -> {:kind, value}
+      {"id", value} -> {:id, value}
+      {"source", value} -> {:source, value}
+      {"target", value} -> {:target, value}
+      {"qualified_name", value} -> {:qualified_name, value}
+      {"schema", value} -> {:schema, value}
+      {key, value} when is_atom(key) -> {key, value}
+      {_key, _value} -> nil
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
 
   defp clone(value), do: :erlang.binary_to_term(:erlang.term_to_binary(value))
 end
@@ -238,6 +356,7 @@ defmodule HSM.Model do
             states: %{},
             root: nil,
             attributes: %{},
+            attribute_types: %{},
             operations: %{},
             transitions: [],
             initial: nil
@@ -355,6 +474,9 @@ defmodule HSM.Queue do
     do: length(regular) + length(completion)
 
   def empty?(%__MODULE__{} = queue, context \\ nil), do: len(queue, context) == 0
+
+  def events(%__MODULE__{regular: regular, completion: completion}),
+    do: Enum.reverse(completion) ++ regular
 
   defp normalize_hooks(hooks) do
     source = if is_list(hooks), do: Map.new(hooks), else: hooks

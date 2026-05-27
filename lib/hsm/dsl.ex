@@ -35,9 +35,14 @@ defmodule HSM.DSL do
     add_node(model, model.root, partial)
   end
 
-  defp apply_root_partial(model, {:attribute, name, default}) do
+  defp apply_root_partial(model, {:attribute, name, type, default}) do
     validate_name!("attribute", name)
-    %{model | attributes: Map.put(model.attributes, name, default)}
+
+    %{
+      model
+      | attributes: Map.put(model.attributes, name, default),
+        attribute_types: Map.put(model.attribute_types, name, type)
+    }
   end
 
   defp apply_root_partial(model, {:operation, name, fun})

@@ -115,6 +115,40 @@ defmodule HSMTest do
     assert Map.fetch!(snapshot, :QueueLen) == 0
   end
 
+  test "typed attributes validate runtime writes" do
+    model =
+      HSM.define("TypedAttributes", [
+        HSM.attribute("count", :integer, 1),
+        HSM.initial(HSM.target("idle")),
+        HSM.state("idle")
+      ])
+
+    machine = model |> HSM.new() |> HSM.start()
+    machine = HSM.set(machine, "count", 2)
+
+    assert HSM.get(machine, "count") == {2, true}
+
+    assert_raise HSM.ValidationError, ~r/expected :integer/, fn ->
+      HSM.set(machine, "count", "two")
+    end
+  end
+
+  test "event constructors and runtime kind helpers match runtime atoms" do
+    event = HSM.event("go", Data: %{ok: true}, Kind: HSM.event_kind(), ID: "evt-1")
+    completion = HSM.completion_event()
+
+    assert event.name == "go"
+    assert event.data == %{ok: true}
+    assert event.kind == :event
+    assert event.id == "evt-1"
+    assert completion.kind == :completion_event
+    assert apply(HSM, :EventKind, []) == :event
+    assert apply(HSM, :CompletionEventKind, []) == :completion_event
+    assert apply(HSM, :ChangeEventKind, []) == :set_event
+    assert apply(HSM, :StateKind, []) == :state
+    assert apply(HSM, :FinalStateKind, []) == :final
+  end
+
   test "source-qualified parent transition routes from an active child" do
     {:ok, log} = Agent.start_link(fn -> [] end)
     push = fn value -> Agent.update(log, &(&1 ++ [value])) end

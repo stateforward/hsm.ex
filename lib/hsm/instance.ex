@@ -87,6 +87,13 @@ defmodule HSM.Instance do
       raise ValidationError, message: "unknown attribute #{inspect(name)}"
     end
 
+    type = Map.get(instance.model.attribute_types, name, :any)
+
+    unless value_matches_type?(value, type) do
+      raise ValidationError,
+        message: "attribute #{inspect(name)} expected #{inspect(type)}, got #{inspect(value)}"
+    end
+
     old = Map.get(instance.attributes, name)
     instance = %{instance | attributes: Map.put(instance.attributes, name, value)}
 
@@ -139,7 +146,7 @@ defmodule HSM.Instance do
       State: instance.state,
       Attributes: qualify_attributes(instance),
       QueueLen: queue_len(instance),
-      Events: Enum.map(instance.events, &event_detail/1)
+      Events: Enum.map(instance.events ++ Queue.events(instance.queue), &event_detail/1)
     }
   end
 
@@ -665,10 +672,30 @@ defmodule HSM.Instance do
   end
 
   defp event_detail(event),
-    do: %{Name: event.name, Kind: event.kind, Target: event.target, Schema: event.schema}
+    do: %{
+      Name: event.name,
+      Kind: event.kind,
+      Target: event.target,
+      Guard: false,
+      Schema: event.schema
+    }
 
   defp unique_id, do: "hsm-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
   defp clone(value), do: :erlang.binary_to_term(:erlang.term_to_binary(value))
+
+  defp value_matches_type?(_value, :any), do: true
+  defp value_matches_type?(value, :integer), do: is_integer(value)
+  defp value_matches_type?(value, :float), do: is_float(value)
+  defp value_matches_type?(value, :number), do: is_number(value)
+  defp value_matches_type?(value, :boolean), do: is_boolean(value)
+  defp value_matches_type?(value, :binary), do: is_binary(value)
+  defp value_matches_type?(value, :string), do: is_binary(value)
+  defp value_matches_type?(value, :atom), do: is_atom(value)
+  defp value_matches_type?(value, :list), do: is_list(value)
+  defp value_matches_type?(value, :map), do: is_map(value)
+  defp value_matches_type?(value, type) when is_atom(type), do: is_struct(value, type)
+  defp value_matches_type?(value, type) when is_function(type, 1), do: truthy?(type.(value))
+  defp value_matches_type?(_value, _type), do: true
 
   defp enqueue_event(instance, event) do
     {queue, error} = Queue.push(instance.queue, event, instance)
