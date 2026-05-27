@@ -323,6 +323,44 @@ defmodule HSMTest do
     assert Agent.get(log, & &1) == ["activity"]
   end
 
+  test "stop exits the active state and restart re-enters the initial state" do
+    {:ok, log} = Agent.start_link(fn -> [] end)
+    push = fn value -> Agent.update(log, &(&1 ++ [value])) end
+
+    model =
+      HSM.define("Lifecycle", [
+        HSM.initial(HSM.target("idle")),
+        HSM.state("idle", [
+          HSM.entry(fn -> push.("enter:idle") end),
+          HSM.exit(fn -> push.("exit:idle") end),
+          HSM.transition([HSM.on("go"), HSM.target("done")])
+        ]),
+        HSM.state("done", [HSM.entry(fn -> push.("enter:done") end)])
+      ])
+
+    machine = model |> HSM.new() |> HSM.start()
+    {machine, :processed} = HSM.dispatch(machine, "go")
+    assert HSM.state(machine) == "/Lifecycle/done"
+
+    machine = HSM.restart(machine)
+    assert HSM.state(machine) == "/Lifecycle/idle"
+
+    machine = HSM.stop(machine)
+    assert HSM.state(machine) == ""
+
+    machine = HSM.start(machine)
+    assert HSM.state(machine) == "/Lifecycle/idle"
+
+    assert Agent.get(log, & &1) == [
+             "enter:idle",
+             "exit:idle",
+             "enter:done",
+             "enter:idle",
+             "exit:idle",
+             "enter:idle"
+           ]
+  end
+
   test "invalid names and unresolved targets fail validation" do
     assert_raise HSM.ValidationError, ~r/cannot contain/, fn ->
       HSM.define("Bad/Name", [])

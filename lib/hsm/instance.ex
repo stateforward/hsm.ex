@@ -36,7 +36,19 @@ defmodule HSM.Instance do
     |> elem(0)
   end
 
-  def stop(%__MODULE__{} = instance), do: %{instance | started?: false, state: ""}
+  def stop(%__MODULE__{started?: false} = instance), do: instance
+
+  def stop(%__MODULE__{} = instance) do
+    exit_paths =
+      instance.model
+      |> active_path(instance.state)
+      |> Enum.reject(&(&1 == instance.model.root))
+
+    instance
+    |> exit_states(exit_paths, %Event{name: "StopEvent", kind: :stop_event})
+    |> Map.merge(%{started?: false, state: "", queue: [], deferred: [], timers: []})
+  end
+
   def restart(%__MODULE__{} = instance, data \\ nil), do: instance |> stop() |> start(data)
   def state(%__MODULE__{state: state}), do: state
 

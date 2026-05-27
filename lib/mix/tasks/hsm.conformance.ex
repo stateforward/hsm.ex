@@ -47,7 +47,10 @@ defmodule Mix.Tasks.Hsm.Conformance do
                         "after",
                         "every",
                         "at",
-                        "cancellation"
+                        "cancellation",
+                        "lifecycle",
+                        "restart",
+                        "stop"
                       ])
 
   @impl Mix.Task
@@ -326,6 +329,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
   defp execute_behavior_op(_case, instance, _event, _op, _trace), do: instance
 
   defp execute_step(machine, %{"op" => "start"}, trace, case) do
+    append_lifecycle_trace(trace, case, "start")
     machine = HSM.start(machine)
     append_timer_scheduled(trace, case, HSM.state(machine))
     machine
@@ -388,6 +392,16 @@ defmodule Mix.Tasks.Hsm.Conformance do
     HSM.tick(machine, millis)
   end
 
+  defp execute_step(machine, %{"op" => "restart"}, trace, case) do
+    append_lifecycle_trace(trace, case, "restart")
+    HSM.restart(machine)
+  end
+
+  defp execute_step(machine, %{"op" => "stop"}, trace, case) do
+    append_lifecycle_trace(trace, case, "stop")
+    HSM.stop(machine)
+  end
+
   defp execute_step(machine, _step, _trace, _case), do: machine
 
   defp event_from_value(name) when is_binary(name), do: %HSM.Event{name: name}
@@ -448,6 +462,12 @@ defmodule Mix.Tasks.Hsm.Conformance do
   end
 
   defp maybe_append_undefer(_trace, _event), do: :ok
+
+  defp append_lifecycle_trace(trace, case, kind) do
+    if "lifecycle" in Map.get(case, "features", []) do
+      append_trace(trace, %{"type" => kind})
+    end
+  end
 
   defp append_timer_scheduled(trace, case, state_path) do
     if timer_state?(case, state_path) do
