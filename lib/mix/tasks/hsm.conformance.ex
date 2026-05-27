@@ -52,7 +52,8 @@ defmodule Mix.Tasks.Hsm.Conformance do
                         "restart",
                         "stop",
                         "group",
-                        "broadcast"
+                        "broadcast",
+                        "event_ownership"
                       ])
 
   @impl Mix.Task
@@ -350,6 +351,28 @@ defmodule Mix.Tasks.Hsm.Conformance do
     HSM.set(instance, name, value)
   end
 
+  defp execute_behavior_op(
+         _case,
+         instance,
+         event,
+         %{"op" => "event_metadata_set", "name" => name, "value" => value},
+         _trace
+       ) do
+    metadata = Map.put(event.schema || %{}, name, value)
+    _updated_event = %{event | schema: metadata}
+    instance
+  end
+
+  defp execute_behavior_op(
+         _case,
+         _instance,
+         event,
+         %{"op" => "event_metadata_get", "name" => name},
+         _trace
+       ) do
+    {:return, get_in(event.schema || %{}, [name])}
+  end
+
   defp execute_behavior_op(case, instance, event, %{"op" => "call", "name" => name}, trace) do
     case get_in(case, ["model", "operations", name]) do
       nil -> instance
@@ -501,7 +524,9 @@ defmodule Mix.Tasks.Hsm.Conformance do
   defp execute_multi_step(env, _step, _trace, _case), do: env
 
   defp event_from_value(name) when is_binary(name), do: %HSM.Event{name: name}
-  defp event_from_value(%{"name" => name} = map), do: %HSM.Event{name: name, data: map["data"]}
+
+  defp event_from_value(%{"name" => name} = map),
+    do: %HSM.Event{name: name, data: map["data"], schema: map["metadata"]}
 
   defp assert_expect(expect, machine, trace) do
     if expect["state"] && HSM.state(machine) != expect["state"] do

@@ -384,6 +384,30 @@ defmodule HSMTest do
     assert HSM.state(ctx.machines["two"]) == "/Broadcast/done"
   end
 
+  test "dispatch clones event metadata so caller-owned event is unchanged" do
+    model =
+      HSM.define("Ownership", [
+        HSM.initial(HSM.target("idle")),
+        HSM.state("idle", [
+          HSM.transition([
+            HSM.on("mutate"),
+            HSM.target("done"),
+            HSM.effect(fn event ->
+              %{event | schema: Map.put(event.schema, "owner", "changed")}
+            end)
+          ])
+        ]),
+        HSM.state("done")
+      ])
+
+    event = %HSM.Event{name: "mutate", schema: %{"owner" => "caller"}}
+    machine = HSM.start(HSM.new(model))
+    {machine, :processed} = HSM.dispatch(machine, event)
+
+    assert HSM.state(machine) == "/Ownership/done"
+    assert event.schema == %{"owner" => "caller"}
+  end
+
   test "invalid names and unresolved targets fail validation" do
     assert_raise HSM.ValidationError, ~r/cannot contain/, fn ->
       HSM.define("Bad/Name", [])
