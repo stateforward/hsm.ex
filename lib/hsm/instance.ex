@@ -121,9 +121,14 @@ defmodule HSM.Instance do
 
   def dispatch(%__MODULE__{started?: false} = instance, _event), do: {instance, :not_started}
 
-  def dispatch(%__MODULE__{} = instance, %Event{} = event) do
-    event = %{event | schema: clone(event.schema)}
+  def dispatch(%__MODULE__{} = instance, %Event{schema: nil} = event),
+    do: dispatch_event(instance, event)
 
+  def dispatch(%__MODULE__{} = instance, %Event{} = event) do
+    dispatch_event(instance, %{event | schema: clone(event.schema)})
+  end
+
+  defp dispatch_event(instance, event) do
     cond do
       deferred?(instance, event) ->
         {%{instance | deferred: instance.deferred ++ [event]}, :deferred}
@@ -347,7 +352,7 @@ defmodule HSM.Instance do
       if dynamic? do
         transition.target
       else
-        elem(resolve_dynamic_target(instance, transition.target, event), 0)
+        transition.target
       end
 
     {exit_paths, path_lca} =
@@ -359,7 +364,10 @@ defmodule HSM.Instance do
       |> exit_states(exit_paths, event)
       |> run_actions(transition.effects, event)
 
-    {target, chained_effects} = resolve_dynamic_target(instance, transition.target, event)
+    {target, chained_effects} =
+      if dynamic?,
+        do: resolve_dynamic_target(instance, transition.target, event),
+        else: {path_target, []}
 
     enter_lca = if target == path_target, do: path_lca, else: DSL.lca(source, target)
     enter_paths = path_from_lca(instance.model, target, enter_lca)
@@ -558,11 +566,13 @@ defmodule HSM.Instance do
   defp deferred?(instance, event), do: event.name in active_deferred_events(instance)
 
   defp schedule_timers(instance, path) do
-    node = instance.model.states[path]
+    timer_transitions =
+      Map.get_lazy(instance.model.timer_transitions, path, fn ->
+        timer_transitions(instance, path)
+      end)
 
     timers =
-      node.transitions
-      |> Enum.filter(fn transition -> timer_trigger?(transition.trigger) end)
+      timer_transitions
       |> Enum.map(fn transition ->
         {kind, value} = transition.trigger
         interval = timer_value(instance, value)
@@ -586,6 +596,11 @@ defmodule HSM.Instance do
       end)
 
     %{instance | timers: instance.timers ++ timers}
+  end
+
+  defp timer_transitions(instance, path) do
+    instance.model.states[path].transitions
+    |> Enum.filter(fn transition -> timer_trigger?(transition.trigger) end)
   end
 
   defp arm_timer(timer, instance) do
@@ -687,6 +702,8 @@ defmodule HSM.Instance do
   defp run_activity_actions(instance, path, actions, event) do
     run_actions(instance, actions, event, %{action: :activity, path: path})
   end
+
+  defp run_actions(instance, [], _event, _context), do: instance
 
   defp run_actions(instance, actions, event, context) do
     Enum.reduce(actions, instance, fn action, acc ->

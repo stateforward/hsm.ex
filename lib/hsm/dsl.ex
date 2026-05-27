@@ -213,7 +213,8 @@ defmodule HSM.DSL do
     %{
       model
       | active_defers: active_defers(model),
-        transition_candidates: transition_candidates(model)
+        transition_candidates: transition_candidates(model),
+        timer_transitions: timer_transitions(model)
     }
   end
 
@@ -253,6 +254,15 @@ defmodule HSM.DSL do
       {path, owned ++ parent_owned}
     end)
   end
+
+  defp timer_transitions(model) do
+    Map.new(model.states, fn {path, node} ->
+      {path, Enum.filter(node.transitions, &timer_trigger?(&1.trigger))}
+    end)
+  end
+
+  defp timer_trigger?({kind, _}) when kind in [:after, :every, :at], do: true
+  defp timer_trigger?(_trigger), do: false
 
   defp path_ancestors(path),
     do:

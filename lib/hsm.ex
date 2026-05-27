@@ -382,6 +382,7 @@ defmodule HSM.Model do
             active_paths: %{},
             active_defers: %{},
             transition_candidates: %{},
+            timer_transitions: %{},
             attributes: %{},
             attribute_types: %{},
             operations: %{},
