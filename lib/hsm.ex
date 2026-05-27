@@ -223,7 +223,9 @@ defmodule HSM do
   for name <- [:Restart],
       do: def(unquote(name)(instance, data \\ nil), do: restart(instance, data))
 
-  for name <- [:Dispatch], do: def(unquote(name)(instance, event), do: dispatch(instance, event))
+  for name <- [:Dispatch],
+      do: def(unquote(name)(instance, event), do: dispatch(instance, event) |> elem(0))
+
   for name <- [:Tick], do: def(unquote(name)(instance, millis), do: tick(instance, millis))
 
   for name <- [:Call],

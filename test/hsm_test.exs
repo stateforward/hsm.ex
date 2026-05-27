@@ -149,6 +149,21 @@ defmodule HSMTest do
     assert apply(HSM, :FinalStateKind, []) == :final
   end
 
+  test "canonical Dispatch returns updated instance without status payload" do
+    model =
+      HSM.define("CanonicalDispatch", [
+        HSM.initial(HSM.target("idle")),
+        HSM.state("idle", [HSM.transition([HSM.on("go"), HSM.target("done")])]),
+        HSM.state("done")
+      ])
+
+    machine = model |> HSM.new() |> HSM.start()
+    updated = apply(HSM, :Dispatch, [machine, "go"])
+
+    assert %HSM.Instance{} = updated
+    assert HSM.state(updated) == "/CanonicalDispatch/done"
+  end
+
   test "source-qualified parent transition routes from an active child" do
     {:ok, log} = Agent.start_link(fn -> [] end)
     push = fn value -> Agent.update(log, &(&1 ++ [value])) end
