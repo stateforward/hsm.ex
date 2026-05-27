@@ -53,7 +53,8 @@ defmodule Mix.Tasks.Hsm.Conformance do
                         "stop",
                         "group",
                         "broadcast",
-                        "event_ownership"
+                        "event_ownership",
+                        "error"
                       ])
 
   @impl Mix.Task
@@ -378,6 +379,11 @@ defmodule Mix.Tasks.Hsm.Conformance do
       nil -> instance
       ref -> behavior(case, behavior_id(ref), trace).(instance, event)
     end
+  end
+
+  defp execute_behavior_op(_case, instance, _event, %{"op" => "raise", "code" => code}, trace) do
+    append_trace(trace, %{"type" => "error", "code" => code || "behavior_error"})
+    instance
   end
 
   defp execute_behavior_op(_case, instance, _event, _op, _trace), do: instance

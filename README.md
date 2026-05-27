@@ -21,9 +21,9 @@ DSL contract. Implemented areas include:
 - start, stop, and restart lifecycle behavior
 - group dispatch, group snapshots, broadcast dispatch, context helpers, and kind utilities
 - per-recipient event metadata ownership for group/broadcast dispatch
+- normalized behavior error tracing in the conformance runner
 
-Async activity cancellation, custom runtime queues/clocks, and error-event
-propagation are still incomplete.
+Async activity cancellation and custom runtime queues/clocks are still incomplete.
 
 ## Usage
 
@@ -68,7 +68,8 @@ selection, choice fallback, source-qualified parent transitions, deferral
 replay/FIFO ordering, history defaults, root completion transitions, `on_call`, timer
 behavior, transition kinds, lifecycle restart/stop, validation, and snapshots.
 Shared conformance also covers group dispatch, group snapshots, broadcast
-dispatch, and event ownership for the supported immutable instance API.
+dispatch, event ownership, and normalized behavior errors for the supported
+immutable instance API.
 
 The conformance runner executes supported shared JSON cases and exits `77` when
 all requested cases are explicit unsupported-feature skips.
