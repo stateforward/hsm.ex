@@ -17,6 +17,7 @@ DSL contract. Implemented areas include:
 - attributes, `on_set`, `on_call`, and predicate `when`
 - choice, shallow history, deep history, deferral, completion, snapshots
 - deterministic logical-time timers via `HSM.tick/2`
+- external, internal, local, and self transition kinds
 - groups, context dispatch helpers, and kind utilities
 
 Async activity cancellation, custom runtime queues/clocks, broadcast/group
@@ -62,8 +63,8 @@ mix hsm.conformance ../hsm/conformance/cases/*.json
 
 The current suite covers core transition flow, nested initial entry, guard
 selection, choice fallback, source-qualified parent transitions, deferral
-replay, history defaults, root completion transitions, `on_call`, validation,
-and snapshots.
+replay, history defaults, root completion transitions, `on_call`, timer
+behavior, transition kinds, validation, and snapshots.
 
 The conformance runner executes supported shared JSON cases and exits `77` when
 all requested cases are explicit unsupported-feature skips.

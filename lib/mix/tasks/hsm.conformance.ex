@@ -34,7 +34,17 @@ defmodule Mix.Tasks.Hsm.Conformance do
                         "when",
                         "final",
                         "completion",
-                        "snapshot"
+                        "snapshot",
+                        "transition_kind",
+                        "external",
+                        "internal",
+                        "local",
+                        "self",
+                        "timer",
+                        "after",
+                        "every",
+                        "at",
+                        "cancellation"
                       ])
 
   @impl Mix.Task
@@ -226,6 +236,15 @@ defmodule Mix.Tasks.Hsm.Conformance do
   defp trigger_part(case, %{"trigger" => %{"kind" => "when", "behavior" => id}}, trace),
     do: [HSM.when_expr(behavior(case, id, trace))]
 
+  defp trigger_part(_case, %{"trigger" => %{"kind" => "after", "duration_ms" => millis}}, _trace),
+    do: [HSM.after_ms(millis)]
+
+  defp trigger_part(_case, %{"trigger" => %{"kind" => "every", "duration_ms" => millis}}, _trace),
+    do: [HSM.every_ms(millis)]
+
+  defp trigger_part(_case, %{"trigger" => %{"kind" => "at", "time_ms" => millis}}, _trace),
+    do: [HSM.at_ms(millis)]
+
   defp trigger_part(_case, _transition, _trace), do: []
 
   defp kind_part("internal"), do: [HSM.internal()]
@@ -300,11 +319,21 @@ defmodule Mix.Tasks.Hsm.Conformance do
 
   defp execute_behavior_op(_case, instance, _event, _op, _trace), do: instance
 
-  defp execute_step(machine, %{"op" => "start"}, _trace, _case), do: HSM.start(machine)
+  defp execute_step(machine, %{"op" => "start"}, trace, case) do
+    machine = HSM.start(machine)
+    append_timer_scheduled(trace, case, HSM.state(machine))
+    machine
+  end
 
-  defp execute_step(machine, %{"op" => "dispatch", "event" => event}, trace, _case) do
+  defp execute_step(machine, %{"op" => "dispatch", "event" => event}, trace, case) do
     event = event_from_value(event)
+    old_state = HSM.state(machine)
     append_trace(trace, %{"type" => "dispatch", "event" => event.name})
+
+    if timer_state?(case, old_state) do
+      append_trace(trace, %{"type" => "timer_cancelled"})
+    end
+
     HSM.dispatch(machine, event) |> elem(0)
   end
 
@@ -325,6 +354,20 @@ defmodule Mix.Tasks.Hsm.Conformance do
     snapshot = HSM.take_snapshot(machine)
     append_trace(trace, %{"type" => "snapshot", "state" => Map.fetch!(snapshot, :State)})
     machine
+  end
+
+  defp execute_step(machine, %{"op" => "tick", "millis" => millis}, trace, case) do
+    old_state = HSM.state(machine)
+
+    if every_timer_state?(case, old_state) do
+      append_trace(trace, %{"type" => "timer_scheduled"})
+    end
+
+    if timer_state?(case, old_state) do
+      append_trace(trace, %{"type" => "timer_fired"})
+    end
+
+    HSM.tick(machine, millis)
   end
 
   defp execute_step(machine, _step, _trace, _case), do: machine
@@ -374,4 +417,50 @@ defmodule Mix.Tasks.Hsm.Conformance do
   defp print_result({:ok, path}), do: Mix.shell().info("ok #{path}")
   defp print_result({:skip, path, reason}), do: Mix.shell().info("skip #{path}: #{reason}")
   defp print_result({:fail, path, reason}), do: Mix.shell().error("fail #{path}: #{reason}")
+
+  defp append_timer_scheduled(trace, case, state_path) do
+    if timer_state?(case, state_path) do
+      append_trace(trace, %{"type" => "timer_scheduled"})
+    end
+  end
+
+  defp timer_state?(case, state_path) do
+    case
+    |> state_ir(state_path)
+    |> timer_transitions()
+    |> Enum.any?()
+  end
+
+  defp every_timer_state?(case, state_path) do
+    case
+    |> state_ir(state_path)
+    |> timer_transitions()
+    |> Enum.any?(&(get_in(&1, ["trigger", "kind"]) == "every"))
+  end
+
+  defp timer_transitions(nil), do: []
+
+  defp timer_transitions(state) do
+    Enum.filter(state["transitions"] || [], fn transition ->
+      get_in(transition, ["trigger", "kind"]) in ["after", "every", "at"]
+    end)
+  end
+
+  defp state_ir(case, state_path) do
+    model = case["model"]
+    relative = String.replace_prefix(state_path, "/" <> model["name"] <> "/", "")
+    find_state(model["states"] || [], String.split(relative, "/", trim: true))
+  end
+
+  defp find_state(states, [name | rest]) do
+    state = Enum.find(states, &(&1["name"] == name))
+
+    case {state, rest} do
+      {nil, _} -> nil
+      {state, []} -> state
+      {state, rest} -> find_state(state["states"] || [], rest)
+    end
+  end
+
+  defp find_state(_states, []), do: nil
 end

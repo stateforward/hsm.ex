@@ -234,8 +234,12 @@ defmodule HSM.DSL do
   end
 
   def lca(a, b) do
-    a_ancestors = [a | ancestors_from_path(a)]
-    Enum.find([b | ancestors_from_path(b)], &(&1 in a_ancestors))
+    if a == b do
+      parent(a)
+    else
+      a_ancestors = [a | ancestors_from_path(a)]
+      Enum.find([b | ancestors_from_path(b)], &(&1 in a_ancestors))
+    end
   end
 
   defp ancestors_from_path(path) do
