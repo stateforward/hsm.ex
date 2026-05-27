@@ -16,10 +16,11 @@ DSL contract. Implemented areas include:
 - guards, effects, entry actions, exit actions, operation references
 - attributes, `on_set`, `on_call`, and predicate `when`
 - choice, shallow history, deep history, deferral, completion, snapshots
+- deterministic logical-time timers via `HSM.tick/2`
 - groups, context dispatch helpers, and kind utilities
 
-Timer declarations are represented in the DSL, but deterministic timer
-scheduling is not wired to an Elixir clock process yet.
+Async activity cancellation, custom runtime queues/clocks, broadcast/group
+conformance, and error-event propagation are still incomplete.
 
 ## Usage
 
@@ -56,9 +57,13 @@ model = apply(HSM, :Define, ["Door", [HSM.initial(HSM.target("closed")), HSM.sta
 
 ```sh
 mix test
+mix hsm.conformance ../hsm/conformance/cases/*.json
 ```
 
 The current suite covers core transition flow, nested initial entry, guard
 selection, choice fallback, source-qualified parent transitions, deferral
 replay, history defaults, root completion transitions, `on_call`, validation,
 and snapshots.
+
+The conformance runner executes supported shared JSON cases and exits `77` when
+all requested cases are explicit unsupported-feature skips.

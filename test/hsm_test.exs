@@ -247,6 +247,82 @@ defmodule HSMTest do
     assert Agent.get(log, & &1) == ["effect", "entry", "operation"]
   end
 
+  test "after timer fires on logical tick and transitions once" do
+    {:ok, log} = Agent.start_link(fn -> [] end)
+    push = fn value -> Agent.update(log, &(&1 ++ [value])) end
+
+    model =
+      HSM.define("TimerAfter", [
+        HSM.initial(HSM.target("waiting")),
+        HSM.state("waiting", [
+          HSM.transition([
+            HSM.after_ms(10),
+            HSM.target("fired"),
+            HSM.effect(fn -> push.("timer") end)
+          ])
+        ]),
+        HSM.state("fired", [HSM.entry(fn -> push.("fired") end)])
+      ])
+
+    machine = model |> HSM.new() |> HSM.start()
+    machine = HSM.tick(machine, 9)
+    assert HSM.state(machine) == "/TimerAfter/waiting"
+
+    machine = HSM.tick(machine, 1)
+    assert HSM.state(machine) == "/TimerAfter/fired"
+    assert Agent.get(log, & &1) == ["timer", "fired"]
+
+    machine = HSM.tick(machine, 100)
+    assert HSM.state(machine) == "/TimerAfter/fired"
+    assert Agent.get(log, & &1) == ["timer", "fired"]
+  end
+
+  test "timer is cancelled when source state exits before it fires" do
+    {:ok, log} = Agent.start_link(fn -> [] end)
+    push = fn value -> Agent.update(log, &(&1 ++ [value])) end
+
+    model =
+      HSM.define("TimerCancel", [
+        HSM.initial(HSM.target("waiting")),
+        HSM.state("waiting", [
+          HSM.transition([
+            HSM.after_ms(10),
+            HSM.target("timeout"),
+            HSM.effect(fn -> push.("timeout") end)
+          ]),
+          HSM.transition([HSM.on("leave"), HSM.target("done")])
+        ]),
+        HSM.state("timeout"),
+        HSM.state("done")
+      ])
+
+    machine = model |> HSM.new() |> HSM.start()
+    {machine, :processed} = HSM.dispatch(machine, "leave")
+    machine = HSM.tick(machine, 20)
+
+    assert HSM.state(machine) == "/TimerCancel/done"
+    assert Agent.get(log, & &1) == []
+  end
+
+  test "activity callbacks run when a state is entered" do
+    {:ok, log} = Agent.start_link(fn -> [] end)
+    push = fn value -> Agent.update(log, &(&1 ++ [value])) end
+
+    model =
+      HSM.define("Activity", [
+        HSM.initial(HSM.target("active")),
+        HSM.state("active", [
+          HSM.activity(fn -> push.("activity") end),
+          HSM.transition([HSM.on("stop"), HSM.target("done")])
+        ]),
+        HSM.state("done")
+      ])
+
+    machine = model |> HSM.new() |> HSM.start()
+    assert HSM.state(machine) == "/Activity/active"
+    assert Agent.get(log, & &1) == ["activity"]
+  end
+
   test "invalid names and unresolved targets fail validation" do
     assert_raise HSM.ValidationError, ~r/cannot contain/, fn ->
       HSM.define("Bad/Name", [])

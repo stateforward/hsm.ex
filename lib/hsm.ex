@@ -58,6 +58,7 @@ defmodule HSM do
   def stop(instance), do: Instance.stop(instance)
   def restart(instance, data \\ nil), do: Instance.restart(instance, data)
   def dispatch(instance, event), do: Instance.dispatch(instance, Event.coerce(event))
+  def tick(instance, millis), do: Instance.tick(instance, millis)
   def call(instance, operation, args \\ []), do: Instance.call(instance, operation, args)
   def get(instance, name), do: Instance.get(instance, name)
   def set(instance, name, value), do: Instance.set(instance, name, value)
@@ -136,6 +137,7 @@ defmodule HSM do
       do: def(unquote(name)(instance, data \\ nil), do: restart(instance, data))
 
   for name <- [:Dispatch], do: def(unquote(name)(instance, event), do: dispatch(instance, event))
+  for name <- [:Tick], do: def(unquote(name)(instance, millis), do: tick(instance, millis))
 
   for name <- [:Call],
       do: def(unquote(name)(instance, operation, args \\ []), do: call(instance, operation, args))

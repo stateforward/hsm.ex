@@ -12,6 +12,8 @@ defmodule HSM.Instance do
             deferred: [],
             history_shallow: %{},
             history_deep: %{},
+            logical_time: 0,
+            timers: [],
             started?: false,
             done?: false,
             events: []
@@ -87,6 +89,11 @@ defmodule HSM.Instance do
     end
   end
 
+  def tick(%__MODULE__{} = instance, millis) when is_integer(millis) and millis >= 0 do
+    instance = %{instance | logical_time: instance.logical_time + millis}
+    fire_due_timers(instance)
+  end
+
   def snapshot(%__MODULE__{} = instance) do
     %Snapshot{
       ID: unique_id(),
@@ -107,6 +114,8 @@ defmodule HSM.Instance do
         deferred: [],
         history_shallow: %{},
         history_deep: %{},
+        logical_time: 0,
+        timers: [],
         started?: true,
         done?: false,
         events: []
@@ -198,21 +207,29 @@ defmodule HSM.Instance do
 
   defp trigger_matches?(_instance, %Transition{trigger: {:on_call, expected}}, %Event{
          name: actual
-       }), do: actual == "@call:" <> expected
+       }),
+       do: actual == "@call:" <> expected
 
   defp trigger_matches?(instance, %Transition{trigger: {:when, fun}}, event),
     do: truthy?(invoke(fun, instance, event))
 
-  defp trigger_matches?(_instance, %Transition{trigger: {:after, _}}, %Event{
-         name: "__timer_after__"
-       }), do: true
+  defp trigger_matches?(_instance, %Transition{trigger: {:after, _}} = current, %Event{
+         kind: :timer_event,
+         data: %{transition: transition}
+       }),
+       do: current == transition
 
-  defp trigger_matches?(_instance, %Transition{trigger: {:every, _}}, %Event{
-         name: "__timer_every__"
-       }), do: true
+  defp trigger_matches?(_instance, %Transition{trigger: {:every, _}} = current, %Event{
+         kind: :timer_event,
+         data: %{transition: transition}
+       }),
+       do: current == transition
 
-  defp trigger_matches?(_instance, %Transition{trigger: {:at, _}}, %Event{name: "__timer_at__"}),
-    do: true
+  defp trigger_matches?(_instance, %Transition{trigger: {:at, _}} = current, %Event{
+         kind: :timer_event,
+         data: %{transition: transition}
+       }),
+       do: current == transition
 
   defp trigger_matches?(_instance, _transition, _event), do: false
 
@@ -230,17 +247,31 @@ defmodule HSM.Instance do
   end
 
   defp take_transition(instance, %Transition{} = transition, event) do
-    {target, chained_effects} = resolve_dynamic_target(instance, transition.target, event)
     source = transition.source || instance.state
+    dynamic? = dynamic_target?(instance, transition.target)
 
-    {exit_paths, enter_paths} =
-      transition_paths(instance.model, source, target, transition.kind, instance.state)
+    path_target =
+      if dynamic? do
+        transition.target
+      else
+        elem(resolve_dynamic_target(instance, transition.target, event), 0)
+      end
+
+    {exit_paths, _enter_paths} =
+      transition_paths(instance.model, source, path_target, transition.kind, instance.state)
 
     instance =
       instance
       |> remember_history(exit_paths)
       |> exit_states(exit_paths, event)
-      |> run_actions(transition.effects ++ chained_effects, event)
+      |> run_actions(transition.effects, event)
+
+    {target, chained_effects} = resolve_dynamic_target(instance, transition.target, event)
+    enter_paths = path_from_lca(target, DSL.lca(source, target))
+
+    instance =
+      instance
+      |> run_actions(chained_effects, event)
       |> enter_states(enter_paths, event)
       |> maybe_enter_default(target, event)
       |> maybe_completion()
@@ -254,6 +285,13 @@ defmodule HSM.Instance do
       %Node{kind: :shallow_history} = node -> history_target(instance, node, event, :shallow)
       %Node{kind: :deep_history} = node -> history_target(instance, node, event, :deep)
       _ -> {target, []}
+    end
+  end
+
+  defp dynamic_target?(instance, target) do
+    case instance.model.states[target] do
+      %Node{kind: kind} when kind in [:choice, :shallow_history, :deep_history] -> true
+      _ -> false
     end
   end
 
@@ -319,14 +357,21 @@ defmodule HSM.Instance do
     Enum.reduce(paths, instance, fn path, acc ->
       node = acc.model.states[path]
       acc = %{acc | state: path}
-      run_actions(acc, node.entry, event)
+
+      acc
+      |> run_actions(node.entry, event)
+      |> run_actions(node.activity, event)
+      |> schedule_timers(path)
     end)
   end
 
   defp exit_states(instance, paths, event) do
     Enum.reduce(paths, instance, fn path, acc ->
       node = acc.model.states[path]
-      run_actions(acc, node.exit, event)
+
+      acc
+      |> cancel_timers(path)
+      |> run_actions(node.exit, event)
     end)
   end
 
@@ -409,6 +454,68 @@ defmodule HSM.Instance do
   end
 
   defp deferred?(instance, event), do: event.name in active_deferred_events(instance)
+
+  defp schedule_timers(instance, path) do
+    node = instance.model.states[path]
+
+    timers =
+      node.transitions
+      |> Enum.filter(fn transition -> timer_trigger?(transition.trigger) end)
+      |> Enum.map(fn transition ->
+        {kind, value} = transition.trigger
+        interval = timer_value(instance, value)
+
+        %{
+          source: path,
+          transition: transition,
+          kind: kind,
+          interval: interval,
+          due: timer_due(instance.logical_time, kind, interval)
+        }
+      end)
+
+    %{instance | timers: instance.timers ++ timers}
+  end
+
+  defp cancel_timers(instance, path) do
+    %{instance | timers: Enum.reject(instance.timers, &(&1.source == path))}
+  end
+
+  defp fire_due_timers(instance) do
+    {due, pending} = Enum.split_with(instance.timers, &(&1.due <= instance.logical_time))
+    instance = %{instance | timers: pending}
+
+    Enum.reduce(due, instance, fn timer, acc ->
+      acc =
+        if timer.kind == :every do
+          %{acc | timers: acc.timers ++ [%{timer | due: acc.logical_time + timer.interval}]}
+        else
+          acc
+        end
+
+      event = %Event{
+        name: "__timer_#{timer.kind}__",
+        kind: :timer_event,
+        data: %{source: timer.source, transition: timer.transition}
+      }
+
+      dispatch(acc, event) |> elem(0)
+    end)
+  end
+
+  defp timer_trigger?({kind, _}) when kind in [:after, :every, :at], do: true
+  defp timer_trigger?(_), do: false
+
+  defp timer_value(_instance, value) when is_integer(value), do: value
+
+  defp timer_value(instance, value) when is_binary(value),
+    do: Map.fetch!(instance.attributes, value)
+
+  defp timer_value(instance, fun) when is_function(fun),
+    do: invoke(fun, instance, %Event{name: "TimerSchedule"})
+
+  defp timer_due(_now, :at, value), do: value
+  defp timer_due(now, _kind, value), do: now + value
 
   defp run_actions(instance, actions, event) do
     Enum.reduce(actions, instance, fn action, acc ->
