@@ -808,6 +808,7 @@ defmodule HSM.Instance do
   defp queue_empty?(instance), do: Queue.empty?(instance.queue, instance)
   defp queue_len(instance), do: Queue.len(instance.queue, instance)
   defp reset_queue(%Queue{hooks: hooks}), do: Queue.new(if(hooks, do: hooks, else: nil))
+  defp default_queue_empty?(%Queue{regular: {[], []}, completion: [], hooks: nil}), do: true
   defp default_queue_empty?(%Queue{regular: [], completion: [], hooks: nil}), do: true
   defp default_queue_empty?(_queue), do: false
 

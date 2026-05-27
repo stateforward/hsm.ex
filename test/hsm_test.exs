@@ -525,6 +525,21 @@ defmodule HSMTest do
     assert HSM.Queue.len(queue) == 0
   end
 
+  test "default queue preserves FIFO regular events" do
+    queue = HSM.queue()
+    {queue, nil} = HSM.Queue.push(queue, "one")
+    {queue, nil} = HSM.Queue.push(queue, "two")
+
+    assert HSM.Queue.len(queue) == 2
+
+    {queue, first} = HSM.Queue.pop(queue)
+    {queue, second} = HSM.Queue.pop(queue)
+
+    assert first.name == "one"
+    assert second.name == "two"
+    assert HSM.Queue.len(queue) == 0
+  end
+
   test "queue rejects async hook results" do
     queue =
       HSM.queue(%{

@@ -431,7 +431,7 @@ defmodule HSM.Queue do
   @moduledoc false
   alias HSM.{Event, ValidationError}
 
-  defstruct regular: [], completion: [], hooks: nil
+  defstruct regular: :queue.new(), completion: [], hooks: nil
 
   def new(nil), do: %__MODULE__{}
   def new(%__MODULE__{} = queue), do: queue
@@ -465,7 +465,7 @@ defmodule HSM.Queue do
         end
 
       true ->
-        {%{queue | regular: queue.regular ++ [event]}, nil}
+        {%{queue | regular: :queue.in(event, queue.regular)}, nil}
     end
   end
 
@@ -484,10 +484,21 @@ defmodule HSM.Queue do
     end
   end
 
-  def pop(%__MODULE__{regular: [event | rest]} = queue, _context),
-    do: {%{queue | regular: rest}, event}
+  def pop(%__MODULE__{regular: regular} = queue, _context) do
+    case regular_out(regular) do
+      {{:value, event}, rest} -> {%{queue | regular: rest}, event}
+      {:empty, _regular} -> {queue, nil}
+    end
+  end
 
-  def pop(%__MODULE__{} = queue, _context), do: {queue, nil}
+  defp regular_out(regular) when is_list(regular) do
+    case regular do
+      [event | rest] -> {{:value, event}, rest}
+      [] -> {:empty, regular}
+    end
+  end
+
+  defp regular_out(regular), do: :queue.out(regular)
 
   def len(queue, context \\ nil)
 
@@ -499,12 +510,18 @@ defmodule HSM.Queue do
   end
 
   def len(%__MODULE__{regular: regular, completion: completion}, _context),
-    do: length(regular) + length(completion)
+    do: regular_len(regular) + length(completion)
+
+  defp regular_len(regular) when is_list(regular), do: length(regular)
+  defp regular_len(regular), do: :queue.len(regular)
 
   def empty?(%__MODULE__{} = queue, context \\ nil), do: len(queue, context) == 0
 
   def events(%__MODULE__{regular: regular, completion: completion}),
-    do: Enum.reverse(completion) ++ regular
+    do: Enum.reverse(completion) ++ regular_events(regular)
+
+  defp regular_events(regular) when is_list(regular), do: regular
+  defp regular_events(regular), do: :queue.to_list(regular)
 
   defp normalize_hooks(hooks) do
     source = if is_list(hooks), do: Map.new(hooks), else: hooks
