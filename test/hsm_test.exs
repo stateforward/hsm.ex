@@ -415,6 +415,97 @@ defmodule HSMTest do
     assert HSM.state(ctx.machines["two"]) == "/Broadcast/done"
   end
 
+  test "custom queue hooks receive regular dispatch events" do
+    {:ok, queue} = Agent.start_link(fn -> [] end)
+    {:ok, log} = Agent.start_link(fn -> [] end)
+    {:ok, pushed} = Agent.start_link(fn -> [] end)
+
+    hooks = %{
+      Push: fn _context, event ->
+        Agent.update(pushed, &(&1 ++ [event.name]))
+        Agent.update(queue, &(&1 ++ [event]))
+      end,
+      Pop: fn _context ->
+        Agent.get_and_update(queue, fn
+          [event | rest] -> {event, rest}
+          [] -> {nil, []}
+        end)
+      end,
+      Len: fn _context -> Agent.get(queue, &length/1) end
+    }
+
+    model =
+      HSM.define("Queued", [
+        HSM.initial(HSM.target("idle")),
+        HSM.state("idle", [
+          HSM.transition([HSM.on("go"), HSM.target("done")])
+        ]),
+        HSM.state("done", [HSM.entry(fn -> Agent.update(log, &(&1 ++ ["done"])) end)])
+      ])
+
+    machine = HSM.new(model, HSM.Config.new(queue: HSM.queue(hooks))) |> HSM.start()
+    {machine, :processed} = HSM.dispatch(machine, "go")
+
+    assert HSM.state(machine) == "/Queued/done"
+    assert Agent.get(pushed, & &1) == ["go"]
+    assert Agent.get(log, & &1) == ["done"]
+    assert Map.fetch!(HSM.take_snapshot(machine), :QueueLen) == 0
+  end
+
+  test "queue keeps runtime priority events out of custom regular hooks" do
+    {:ok, pushed} = Agent.start_link(fn -> [] end)
+
+    queue =
+      HSM.queue(%{
+        push: fn event -> Agent.update(pushed, &(&1 ++ [event.name])) end,
+        pop: fn -> nil end,
+        len: fn -> 0 end
+      })
+
+    {queue, nil} = HSM.Queue.push(queue, %HSM.Event{name: "complete", kind: :completion_event})
+    assert HSM.Queue.len(queue) == 1
+    assert Agent.get(pushed, & &1) == []
+
+    {queue, event} = HSM.Queue.pop(queue)
+    assert event.name == "complete"
+    assert HSM.Queue.len(queue) == 0
+  end
+
+  test "queue rejects async hook results" do
+    queue =
+      HSM.queue(%{
+        push: fn _event -> Task.async(fn -> :ok end) end,
+        pop: fn -> nil end,
+        len: fn -> 0 end
+      })
+
+    {_queue, error} = HSM.Queue.push(queue, "go")
+
+    assert %HSM.ValidationError{} = error
+    assert error.message =~ "must be synchronous"
+  end
+
+  test "clock hooks are applied when timers are scheduled" do
+    {:ok, sleeps} = Agent.start_link(fn -> [] end)
+
+    model =
+      HSM.define("Clocked", [
+        HSM.initial(HSM.target("waiting")),
+        HSM.state("waiting", [
+          HSM.transition([HSM.after_ms(25), HSM.target("done")])
+        ]),
+        HSM.state("done")
+      ])
+
+    clock = HSM.clock(sleep: fn duration -> Agent.update(sleeps, &(&1 ++ [duration])) end)
+    machine = HSM.new(model, HSM.Config.new(clock: clock)) |> HSM.start()
+
+    assert Agent.get(sleeps, & &1) == [25]
+
+    machine = HSM.tick(machine, 25)
+    assert HSM.state(machine) == "/Clocked/done"
+  end
+
   test "dispatch clones event metadata so caller-owned event is unchanged" do
     model =
       HSM.define("Ownership", [

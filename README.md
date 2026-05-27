@@ -24,9 +24,8 @@ DSL contract. Implemented areas include:
 - normalized behavior error tracing in the conformance runner
 - nested dispatch queue reentrancy with FIFO-after-current ordering
 - deterministic async behavior ordering and cancellable activity handles
-
-Custom runtime queues/clocks are still incomplete beyond the default immutable
-FIFO queue and deterministic logical-time timers exposed through `HSM.tick/2`.
+- `Config.Queue`, `Config.Clock`, and `DefaultClock` runtime hooks for the
+  immutable Elixir runtime
 
 ## Usage
 
@@ -72,9 +71,9 @@ replay/FIFO ordering, history defaults, root completion transitions, `on_call`, 
 behavior, transition kinds, lifecycle restart/stop, validation, and snapshots.
 Shared conformance also covers group dispatch, group snapshots, broadcast
 dispatch, event ownership, nested dispatch reentrancy, and normalized behavior
-errors for the supported immutable instance API. The shared async ordering and
-activity cancellation cases are covered through deterministic continuations and
-cancellable activity handles.
+errors for the supported immutable instance API. Local ExUnit coverage exercises
+custom queue hooks, runtime-priority queue events, synchronous hook validation,
+clock hooks, deterministic async ordering, and cancellable activity handles.
 
 The conformance runner executes supported shared JSON cases and exits `77` when
 all requested cases are explicit unsupported-feature skips.

@@ -10,7 +10,7 @@ defmodule HSM do
   for `apply/3`, for example `apply(HSM, :Define, ["Door", parts])`.
   """
 
-  alias HSM.{Config, Context, Event, Group, Instance, Kind}
+  alias HSM.{Clock, Config, Context, Event, Group, Instance, Kind, Queue}
   alias HSM.DSL
 
   def define(name, partials \\ []), do: DSL.define(name, List.wrap(partials))
@@ -52,6 +52,9 @@ defmodule HSM do
   def defer(events), do: {:defer, List.wrap(events)}
   def attribute(name, default \\ nil), do: {:attribute, name, default}
   def operation(name, fun), do: {:operation, name, fun}
+  def queue(hooks \\ nil), do: Queue.new(hooks)
+  def clock(opts \\ []), do: Clock.new(opts)
+  def default_clock, do: Clock.default()
 
   def new(model, config \\ nil), do: Instance.new(model, config || Config.new())
   def start(instance, data \\ nil), do: Instance.start(instance, data)
@@ -128,6 +131,9 @@ defmodule HSM do
       do: def(unquote(name)(attr_name, default \\ nil), do: attribute(attr_name, default))
 
   for name <- [:Operation], do: def(unquote(name)(op_name, fun), do: operation(op_name, fun))
+  for name <- [:Queue], do: def(unquote(name)(hooks \\ nil), do: queue(hooks))
+  for name <- [:Clock], do: def(unquote(name)(opts \\ []), do: clock(opts))
+  for name <- [:DefaultClock], do: def(unquote(name)(), do: default_clock())
   for name <- [:Config], do: def(unquote(name)(opts \\ []), do: Config.new(opts))
   for name <- [:New], do: def(unquote(name)(model, config \\ nil), do: new(model, config))
   for name <- [:Start], do: def(unquote(name)(instance, data \\ nil), do: start(instance, data))
@@ -178,6 +184,16 @@ defmodule HSM.Config do
       {:Data, value} -> {:data, value}
       {:Clock, value} -> {:clock, value}
       {:Queue, value} -> {:queue, value}
+      {"ID", value} -> {:id, value}
+      {"Name", value} -> {:name, value}
+      {"Data", value} -> {:data, value}
+      {"Clock", value} -> {:clock, value}
+      {"Queue", value} -> {:queue, value}
+      {"id", value} -> {:id, value}
+      {"name", value} -> {:name, value}
+      {"data", value} -> {:data, value}
+      {"clock", value} -> {:clock, value}
+      {"queue", value} -> {:queue, value}
       pair -> pair
     end)
   end
@@ -253,4 +269,199 @@ end
 defmodule HSM.Snapshot do
   @moduledoc false
   defstruct ID: "", QualifiedName: "", State: "", Attributes: %{}, QueueLen: 0, Events: []
+end
+
+defmodule HSM.Queue do
+  @moduledoc false
+  alias HSM.{Event, ValidationError}
+
+  defstruct regular: [], completion: [], hooks: nil
+
+  def new(nil), do: %__MODULE__{}
+  def new(%__MODULE__{} = queue), do: queue
+
+  def new(hooks) when is_map(hooks) or is_list(hooks) do
+    hooks = normalize_hooks(hooks)
+
+    unless hooks.push && hooks.pop && hooks.len do
+      raise ValidationError,
+        message: "Queue requires complete Push/Pop/Len or push/pop/len hooks"
+    end
+
+    %__MODULE__{hooks: hooks}
+  end
+
+  def push(queue, event, context \\ nil)
+
+  def push(%__MODULE__{} = queue, event, context) do
+    event = Event.coerce(event)
+
+    cond do
+      priority_event?(event) ->
+        {%{queue | completion: [event | queue.completion]}, nil}
+
+      queue.hooks ->
+        case invoke_push_hook(queue.hooks.push, context, event) do
+          nil -> {queue, nil}
+          :ok -> {queue, nil}
+          {:ok, _} -> {queue, nil}
+          error -> {queue, error}
+        end
+
+      true ->
+        {%{queue | regular: queue.regular ++ [event]}, nil}
+    end
+  end
+
+  def pop(queue, context \\ nil)
+
+  def pop(%__MODULE__{completion: [event | rest]} = queue, _context),
+    do: {%{queue | completion: rest}, event}
+
+  def pop(%__MODULE__{hooks: hooks} = queue, context) when not is_nil(hooks) do
+    case invoke_hook(hooks.pop, [context], "Pop/pop") do
+      nil -> {queue, nil}
+      %ValidationError{} = error -> {queue, error}
+      %_{} = event -> {queue, Event.coerce(event)}
+      event when is_binary(event) or is_map(event) -> {queue, Event.coerce(event)}
+      error -> {queue, error}
+    end
+  end
+
+  def pop(%__MODULE__{regular: [event | rest]} = queue, _context),
+    do: {%{queue | regular: rest}, event}
+
+  def pop(%__MODULE__{} = queue, _context), do: {queue, nil}
+
+  def len(queue, context \\ nil)
+
+  def len(%__MODULE__{hooks: hooks, completion: completion}, context) when not is_nil(hooks) do
+    case invoke_hook(hooks.len, [context], "Len/len") do
+      count when is_integer(count) and count >= 0 -> length(completion) + count
+      error -> error
+    end
+  end
+
+  def len(%__MODULE__{regular: regular, completion: completion}, _context),
+    do: length(regular) + length(completion)
+
+  def empty?(%__MODULE__{} = queue, context \\ nil), do: len(queue, context) == 0
+
+  defp normalize_hooks(hooks) do
+    source = if is_list(hooks), do: Map.new(hooks), else: hooks
+
+    %{
+      push:
+        Map.get(source, :Push) || Map.get(source, "Push") || Map.get(source, :push) ||
+          Map.get(source, "push"),
+      pop:
+        Map.get(source, :Pop) || Map.get(source, "Pop") || Map.get(source, :pop) ||
+          Map.get(source, "pop"),
+      len:
+        Map.get(source, :Len) || Map.get(source, "Len") || Map.get(source, :len) ||
+          Map.get(source, "len")
+    }
+  end
+
+  defp invoke_push_hook(fun, context, event) when is_function(fun) do
+    args =
+      case :erlang.fun_info(fun, :arity) do
+        {:arity, 2} -> [context, event]
+        {:arity, 1} -> [event]
+        {:arity, 0} -> []
+      end
+
+    invoke_hook_args(fun, args, "Push/push")
+  end
+
+  defp invoke_hook(fun, args, label) when is_function(fun) do
+    args =
+      case :erlang.fun_info(fun, :arity) do
+        {:arity, 2} -> args
+        {:arity, 1} -> Enum.take(args, 1)
+        {:arity, 0} -> []
+      end
+
+    invoke_hook_args(fun, args, label)
+  end
+
+  defp invoke_hook_args(fun, args, label) do
+    result = apply(fun, args)
+
+    if awaitable?(result) do
+      %ValidationError{message: "Queue #{label} must be synchronous"}
+    else
+      result
+    end
+  end
+
+  defp priority_event?(%Event{kind: kind})
+       when kind in [:completion_event, :initial_event, :timer_event, :error_event],
+       do: true
+
+  defp priority_event?(_event), do: false
+  defp awaitable?(%Task{}), do: true
+  defp awaitable?(_), do: false
+end
+
+defmodule HSM.Clock do
+  @moduledoc false
+  defstruct sleep: nil, after: nil, new_timer: nil, now: nil
+
+  def default, do: %__MODULE__{now: &System.monotonic_time/1}
+  def new(nil), do: default()
+  def new(%__MODULE__{} = clock), do: inherit_default(clock)
+
+  def new(opts) when is_list(opts) or is_map(opts) do
+    source = if is_list(opts), do: Map.new(opts), else: opts
+
+    %__MODULE__{
+      sleep:
+        Map.get(source, :Sleep) || Map.get(source, "Sleep") || Map.get(source, :sleep) ||
+          Map.get(source, "sleep"),
+      after:
+        Map.get(source, :After) || Map.get(source, "After") || Map.get(source, :after) ||
+          Map.get(source, "after"),
+      new_timer:
+        Map.get(source, :NewTimer) || Map.get(source, "NewTimer") ||
+          Map.get(source, :new_timer) || Map.get(source, "new_timer"),
+      now:
+        Map.get(source, :Now) || Map.get(source, "Now") || Map.get(source, :now) ||
+          Map.get(source, "now")
+    }
+    |> inherit_default()
+  end
+
+  def wait(%__MODULE__{} = clock, duration, context \\ nil) do
+    fun = clock.after || clock.sleep
+
+    if is_function(fun) do
+      invoke(fun, [context, duration])
+    else
+      {:ok, duration}
+    end
+  end
+
+  def now(clock, unit \\ :millisecond)
+
+  def now(%__MODULE__{now: fun}, unit) when is_function(fun, 1), do: fun.(unit)
+  def now(%__MODULE__{now: fun}, _unit) when is_function(fun, 0), do: fun.()
+  def now(_clock, unit), do: System.monotonic_time(unit)
+
+  defp inherit_default(clock) do
+    default = default()
+
+    %{
+      clock
+      | now: clock.now || default.now
+    }
+  end
+
+  defp invoke(fun, args) do
+    case :erlang.fun_info(fun, :arity) do
+      {:arity, 2} -> fun.(Enum.at(args, 0), Enum.at(args, 1))
+      {:arity, 1} -> fun.(Enum.at(args, 1))
+      {:arity, 0} -> fun.()
+    end
+  end
 end

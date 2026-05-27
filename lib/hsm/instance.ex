@@ -4,10 +4,12 @@ defmodule HSM.Instance do
   alias HSM.{
     ActivityHandle,
     Config,
+    Clock,
     DSL,
     Event,
     Model,
     Node,
+    Queue,
     Snapshot,
     Transition,
     ValidationError
@@ -18,7 +20,8 @@ defmodule HSM.Instance do
             model: nil,
             state: "",
             attributes: %{},
-            queue: [],
+            queue: nil,
+            clock: nil,
             deferred: [],
             active_activities: [],
             history_shallow: %{},
@@ -36,7 +39,9 @@ defmodule HSM.Instance do
       id: if(id == "", do: unique_id(), else: id),
       name: if(config.name in [nil, ""], do: model.path, else: config.name),
       model: model,
-      attributes: model.attributes
+      attributes: model.attributes,
+      queue: Queue.new(config.queue),
+      clock: Clock.new(config.clock)
     }
   end
 
@@ -60,7 +65,7 @@ defmodule HSM.Instance do
     |> Map.merge(%{
       started?: false,
       state: "",
-      queue: [],
+      queue: reset_queue(instance.queue),
       deferred: [],
       active_activities: [],
       timers: []
@@ -115,7 +120,10 @@ defmodule HSM.Instance do
     if deferred?(instance, event) do
       {%{instance | deferred: instance.deferred ++ [event]}, :deferred}
     else
-      process_event(%{instance | queue: instance.queue ++ [event]})
+      case enqueue_event(instance, event) do
+        {%__MODULE__{} = instance, nil} -> process_event(instance)
+        {%__MODULE__{} = instance, error} -> handle_runtime_error(instance, error)
+      end
     end
   end
 
@@ -130,7 +138,7 @@ defmodule HSM.Instance do
       QualifiedName: instance.name,
       State: instance.state,
       Attributes: qualify_attributes(instance),
-      QueueLen: length(instance.queue),
+      QueueLen: queue_len(instance),
       Events: Enum.map(instance.events, &event_detail/1)
     }
   end
@@ -140,7 +148,7 @@ defmodule HSM.Instance do
       instance
       | state: instance.model.root,
         attributes: instance.model.attributes,
-        queue: [],
+        queue: reset_queue(instance.queue),
         deferred: [],
         active_activities: [],
         history_shallow: %{},
@@ -160,10 +168,21 @@ defmodule HSM.Instance do
     end
   end
 
-  defp process_event(%__MODULE__{queue: []} = instance), do: {instance, :ignored}
+  defp process_event(%__MODULE__{} = instance) do
+    case pop_event(instance) do
+      {%__MODULE__{} = instance, nil} ->
+        {instance, :ignored}
 
-  defp process_event(%__MODULE__{queue: [event | rest]} = instance) do
-    instance = %{instance | queue: rest, events: instance.events ++ [event]}
+      {%__MODULE__{} = instance, %Event{} = event} ->
+        process_popped_event(instance, event)
+
+      {%__MODULE__{} = instance, error} ->
+        handle_runtime_error(instance, error)
+    end
+  end
+
+  defp process_popped_event(instance, event) do
+    instance = %{instance | events: instance.events ++ [event]}
 
     instance =
       case select_transition(instance, event) do
@@ -173,7 +192,7 @@ defmodule HSM.Instance do
 
     instance = replay_deferred(instance)
 
-    if instance.queue == [] do
+    if queue_empty?(instance) do
       {instance, :processed}
     else
       process_event(instance)
@@ -188,7 +207,9 @@ defmodule HSM.Instance do
     {still_deferred, ready} =
       Enum.split_with(instance.deferred, &(Event.coerce(&1).name in active_defer))
 
-    %{instance | deferred: still_deferred, queue: ready ++ instance.queue}
+    Enum.reduce(ready, %{instance | deferred: still_deferred}, fn event, acc ->
+      elem(enqueue_event(acc, event), 0)
+    end)
   end
 
   defp select_transition(instance, event) do
@@ -502,6 +523,7 @@ defmodule HSM.Instance do
           transition: transition,
           kind: kind,
           interval: interval,
+          clock_wait: Clock.wait(instance.clock, interval, %{instance: instance, path: path}),
           due: timer_due(instance.logical_time, kind, interval)
         }
       end)
@@ -554,7 +576,11 @@ defmodule HSM.Instance do
         data: %{source: timer.source, transition: timer.transition}
       }
 
-      dispatch(acc, event) |> elem(0)
+      acc
+      |> enqueue_event(event)
+      |> elem(0)
+      |> process_event()
+      |> elem(0)
     end)
   end
 
@@ -643,4 +669,30 @@ defmodule HSM.Instance do
 
   defp unique_id, do: "hsm-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
   defp clone(value), do: :erlang.binary_to_term(:erlang.term_to_binary(value))
+
+  defp enqueue_event(instance, event) do
+    {queue, error} = Queue.push(instance.queue, event, instance)
+    {%{instance | queue: queue}, error}
+  end
+
+  defp pop_event(instance) do
+    {queue, event_or_error} = Queue.pop(instance.queue, instance)
+    {%{instance | queue: queue}, event_or_error}
+  end
+
+  defp queue_empty?(instance), do: Queue.empty?(instance.queue, instance)
+  defp queue_len(instance), do: Queue.len(instance.queue, instance)
+  defp reset_queue(%Queue{hooks: hooks}), do: Queue.new(if(hooks, do: hooks, else: nil))
+
+  defp handle_runtime_error(instance, %ValidationError{} = error),
+    do: handle_runtime_error(instance, error.message)
+
+  defp handle_runtime_error(instance, error) do
+    error_event = %Event{name: "hsm_error", kind: :error_event, data: error}
+
+    instance
+    |> enqueue_event(error_event)
+    |> elem(0)
+    |> process_event()
+  end
 end
