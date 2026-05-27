@@ -23,8 +23,10 @@ DSL contract. Implemented areas include:
 - per-recipient event metadata ownership for group/broadcast dispatch
 - normalized behavior error tracing in the conformance runner
 - nested dispatch queue reentrancy with FIFO-after-current ordering
+- deterministic async behavior ordering and cancellable activity handles
 
-Async activity cancellation and custom runtime queues/clocks are still incomplete.
+Custom runtime queues/clocks are still incomplete beyond the default immutable
+FIFO queue and deterministic logical-time timers exposed through `HSM.tick/2`.
 
 ## Usage
 
@@ -70,7 +72,9 @@ replay/FIFO ordering, history defaults, root completion transitions, `on_call`, 
 behavior, transition kinds, lifecycle restart/stop, validation, and snapshots.
 Shared conformance also covers group dispatch, group snapshots, broadcast
 dispatch, event ownership, nested dispatch reentrancy, and normalized behavior
-errors for the supported immutable instance API.
+errors for the supported immutable instance API. The shared async ordering and
+activity cancellation cases are covered through deterministic continuations and
+cancellable activity handles.
 
 The conformance runner executes supported shared JSON cases and exits `77` when
 all requested cases are explicit unsupported-feature skips.

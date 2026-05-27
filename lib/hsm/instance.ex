@@ -1,7 +1,17 @@
 defmodule HSM.Instance do
   @moduledoc false
 
-  alias HSM.{Config, DSL, Event, Model, Node, Snapshot, Transition, ValidationError}
+  alias HSM.{
+    ActivityHandle,
+    Config,
+    DSL,
+    Event,
+    Model,
+    Node,
+    Snapshot,
+    Transition,
+    ValidationError
+  }
 
   defstruct id: "",
             name: "",
@@ -10,6 +20,7 @@ defmodule HSM.Instance do
             attributes: %{},
             queue: [],
             deferred: [],
+            active_activities: [],
             history_shallow: %{},
             history_deep: %{},
             logical_time: 0,
@@ -46,7 +57,14 @@ defmodule HSM.Instance do
 
     instance
     |> exit_states(exit_paths, %Event{name: "StopEvent", kind: :stop_event})
-    |> Map.merge(%{started?: false, state: "", queue: [], deferred: [], timers: []})
+    |> Map.merge(%{
+      started?: false,
+      state: "",
+      queue: [],
+      deferred: [],
+      active_activities: [],
+      timers: []
+    })
   end
 
   def restart(%__MODULE__{} = instance, data \\ nil), do: instance |> stop() |> start(data)
@@ -124,6 +142,7 @@ defmodule HSM.Instance do
         attributes: instance.model.attributes,
         queue: [],
         deferred: [],
+        active_activities: [],
         history_shallow: %{},
         history_deep: %{},
         logical_time: 0,
@@ -372,7 +391,7 @@ defmodule HSM.Instance do
 
       acc
       |> run_actions(node.entry, event)
-      |> run_actions(node.activity, event)
+      |> run_activity_actions(path, node.activity, event)
       |> schedule_timers(path)
     end)
   end
@@ -382,6 +401,7 @@ defmodule HSM.Instance do
       node = acc.model.states[path]
 
       acc
+      |> cancel_activities(path, event)
       |> cancel_timers(path)
       |> run_actions(node.exit, event)
     end)
@@ -493,6 +513,29 @@ defmodule HSM.Instance do
     %{instance | timers: Enum.reject(instance.timers, &(&1.source == path))}
   end
 
+  defp cancel_activities(instance, path, event) do
+    {cancelled, active} =
+      Enum.split_with(instance.active_activities, fn %ActivityHandle{path: active_path} ->
+        active_path == path
+      end)
+
+    instance = %{instance | active_activities: active}
+
+    Enum.reduce(cancelled, instance, fn %ActivityHandle{cancel: cancel}, acc ->
+      case cancel do
+        fun when is_function(fun) ->
+          case invoke_with_context(fun, acc, event, %{action: :activity_cancel, path: path}) do
+            %__MODULE__{} = updated -> updated
+            {%__MODULE__{} = updated, _status} -> updated
+            _ -> acc
+          end
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
   defp fire_due_timers(instance) do
     {due, pending} = Enum.split_with(instance.timers, &(&1.due <= instance.logical_time))
     instance = %{instance | timers: pending}
@@ -530,21 +573,59 @@ defmodule HSM.Instance do
   defp timer_due(now, _kind, value), do: now + value
 
   defp run_actions(instance, actions, event) do
+    run_actions(instance, actions, event, %{action: :effect})
+  end
+
+  defp run_activity_actions(instance, path, actions, event) do
+    run_actions(instance, actions, event, %{action: :activity, path: path})
+  end
+
+  defp run_actions(instance, actions, event, context) do
     Enum.reduce(actions, instance, fn action, acc ->
       result =
         case action do
-          name when is_binary(name) -> invoke(Map.fetch!(acc.model.operations, name), acc, event)
-          fun when is_function(fun) -> invoke(fun, acc, event)
-          _ -> acc
+          name when is_binary(name) ->
+            invoke_with_context(Map.fetch!(acc.model.operations, name), acc, event, context)
+
+          fun when is_function(fun) ->
+            invoke_with_context(fun, acc, event, context)
+
+          _ ->
+            acc
         end
 
       case result do
-        %__MODULE__{} = updated -> updated
-        {%__MODULE__{} = updated, _status} -> updated
-        _ -> acc
+        %__MODULE__{} = updated ->
+          updated
+
+        {%__MODULE__{} = updated, _status} ->
+          updated
+
+        %ActivityHandle{} = handle ->
+          remember_activity(acc, handle, context)
+
+        {:hsm_activity, cancel} ->
+          remember_activity(acc, %ActivityHandle{cancel: cancel}, context)
+
+        {:hsm_activity, metadata, cancel} ->
+          remember_activity(acc, %ActivityHandle{metadata: metadata, cancel: cancel}, context)
+
+        _ ->
+          acc
       end
     end)
   end
+
+  defp remember_activity(instance, handle, %{action: :activity, path: path}) do
+    %{instance | active_activities: instance.active_activities ++ [%{handle | path: path}]}
+  end
+
+  defp remember_activity(instance, _handle, _context), do: instance
+
+  defp invoke_with_context(fun, instance, event, context) when is_function(fun, 3),
+    do: fun.(context, instance, event)
+
+  defp invoke_with_context(fun, instance, event, _context), do: invoke(fun, instance, event)
 
   defp invoke(fun, instance, event) when is_function(fun, 3), do: fun.(nil, instance, event)
   defp invoke(fun, instance, event) when is_function(fun, 2), do: fun.(instance, event)

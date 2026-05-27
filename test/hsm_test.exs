@@ -323,6 +323,37 @@ defmodule HSMTest do
     assert Agent.get(log, & &1) == ["activity"]
   end
 
+  test "activity handles are cancelled when their state exits" do
+    {:ok, log} = Agent.start_link(fn -> [] end)
+    push = fn value -> Agent.update(log, &(&1 ++ [value])) end
+
+    model =
+      HSM.define("ActivityCancel", [
+        HSM.initial(HSM.target("active")),
+        HSM.state("active", [
+          HSM.activity(fn ->
+            push.("activity:start")
+            {:hsm_activity, fn -> push.("activity:cancel") end}
+          end),
+          HSM.exit(fn -> push.("exit:active") end),
+          HSM.transition([HSM.on("stop"), HSM.target("done")])
+        ]),
+        HSM.state("done", [HSM.entry(fn -> push.("enter:done") end)])
+      ])
+
+    machine = model |> HSM.new() |> HSM.start()
+    {machine, :processed} = HSM.dispatch(machine, "stop")
+
+    assert HSM.state(machine) == "/ActivityCancel/done"
+
+    assert Agent.get(log, & &1) == [
+             "activity:start",
+             "activity:cancel",
+             "exit:active",
+             "enter:done"
+           ]
+  end
+
   test "stop exits the active state and restart re-enters the initial state" do
     {:ok, log} = Agent.start_link(fn -> [] end)
     push = fn value -> Agent.update(log, &(&1 ++ [value])) end

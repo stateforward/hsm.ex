@@ -35,6 +35,8 @@ defmodule Mix.Tasks.Hsm.Conformance do
                         "queue",
                         "queue_order",
                         "reentrancy",
+                        "async",
+                        "activity",
                         "when",
                         "final",
                         "completion",
@@ -200,6 +202,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
 
     parts = parts ++ behavior_parts(case, state, "entry", trace, &HSM.entry/1)
     parts = parts ++ behavior_parts(case, state, "exit", trace, &HSM.exit/1)
+    parts = parts ++ behavior_parts(case, state, "activity", trace, &HSM.activity/1)
     parts = parts ++ Enum.map(state["defer"] || [], &HSM.defer/1)
     parts = parts ++ Enum.map(state["states"] || [], &build_state(case, &1, trace))
     parts = parts ++ Enum.map(state["transitions"] || [], &build_transition(case, &1, trace))
@@ -298,17 +301,26 @@ defmodule Mix.Tasks.Hsm.Conformance do
   defp behavior(case, id, trace) do
     program = get_in(case, ["behaviors", id]) || []
 
-    fn instance, event ->
+    fn ctx, instance, event ->
       Enum.reduce_while(program, instance, fn op, acc ->
-        case execute_behavior_op(case, acc, event, op, trace) do
+        case execute_behavior_op(case, ctx, acc, event, op, trace, id) do
           {:return, value} -> {:halt, value}
+          {:halt, value} -> {:halt, value}
           next -> {:cont, next}
         end
       end)
     end
   end
 
-  defp execute_behavior_op(_case, instance, event, %{"op" => "trace", "value" => value}, trace) do
+  defp execute_behavior_op(
+         _case,
+         _ctx,
+         instance,
+         event,
+         %{"op" => "trace", "value" => value},
+         trace,
+         _id
+       ) do
     maybe_append_undefer(trace, event)
     append_trace(trace, %{"type" => "trace", "value" => value})
     instance
@@ -316,50 +328,60 @@ defmodule Mix.Tasks.Hsm.Conformance do
 
   defp execute_behavior_op(
          _case,
+         _ctx,
          instance,
          _event,
          %{"op" => "return_equals", "name" => name, "value" => value},
-         _trace
+         _trace,
+         _id
        ) do
     {:return, elem(HSM.get(instance, name), 0) == value}
   end
 
   defp execute_behavior_op(
          _case,
+         _ctx,
          _instance,
          _event,
          %{"op" => "return_value", "value" => value},
-         _trace
+         _trace,
+         _id
        ) do
     {:return, value}
   end
 
   defp execute_behavior_op(
          _case,
+         _ctx,
          _instance,
          event,
          %{"op" => "event_data_equals", "path" => path, "value" => value},
-         _trace
+         _trace,
+         _id
        ) do
     {:return, read_path(event.data, path) == value}
   end
 
   defp execute_behavior_op(
          _case,
+         _ctx,
          instance,
          _event,
          %{"op" => "set_attr", "name" => name, "value" => value},
-         _trace
+         _trace,
+         _id
        ) do
     HSM.set(instance, name, value)
   end
 
   defp execute_behavior_op(
          _case,
+         _ctx,
          instance,
          event,
          %{"op" => "event_metadata_set", "name" => name, "value" => value},
-         _trace
+         _trace,
+         _id
        ) do
     metadata = Map.put(event.schema || %{}, name, value)
     _updated_event = %{event | schema: metadata}
@@ -368,32 +390,52 @@ defmodule Mix.Tasks.Hsm.Conformance do
 
   defp execute_behavior_op(
          _case,
+         _ctx,
          _instance,
          event,
          %{"op" => "event_metadata_get", "name" => name},
-         _trace
+         _trace,
+         _id
        ) do
     {:return, get_in(event.schema || %{}, [name])}
   end
 
-  defp execute_behavior_op(case, instance, event, %{"op" => "call", "name" => name}, trace) do
+  defp execute_behavior_op(
+         case,
+         ctx,
+         instance,
+         event,
+         %{"op" => "call", "name" => name},
+         trace,
+         _id
+       ) do
     case get_in(case, ["model", "operations", name]) do
       nil -> instance
-      ref -> behavior(case, behavior_id(ref), trace).(instance, event)
+      ref -> behavior(case, behavior_id(ref), trace).(ctx, instance, event)
     end
   end
 
-  defp execute_behavior_op(_case, instance, _event, %{"op" => "raise", "code" => code}, trace) do
+  defp execute_behavior_op(
+         _case,
+         _ctx,
+         instance,
+         _event,
+         %{"op" => "raise", "code" => code},
+         trace,
+         _id
+       ) do
     append_trace(trace, %{"type" => "error", "code" => code || "behavior_error"})
     instance
   end
 
   defp execute_behavior_op(
          _case,
+         _ctx,
          instance,
          _event,
          %{"op" => "dispatch", "event" => event},
-         trace
+         trace,
+         _id
        ) do
     event = event_from_value(event)
     append_trace(trace, %{"type" => "dispatch", "event" => event.name})
@@ -402,7 +444,29 @@ defmodule Mix.Tasks.Hsm.Conformance do
     instance
   end
 
-  defp execute_behavior_op(_case, instance, _event, _op, _trace), do: instance
+  defp execute_behavior_op(_case, _ctx, instance, _event, %{"op" => "yield"}, _trace, _id),
+    do: instance
+
+  defp execute_behavior_op(
+         _case,
+         %{action: :activity},
+         _instance,
+         _event,
+         %{"op" => "sleep"},
+         trace,
+         id
+       ) do
+    cancel = fn ->
+      append_trace(trace, %{"type" => "activity_cancel", "behavior" => id})
+    end
+
+    {:halt, {:hsm_activity, id, cancel}}
+  end
+
+  defp execute_behavior_op(_case, _ctx, instance, _event, %{"op" => "sleep"}, _trace, _id),
+    do: instance
+
+  defp execute_behavior_op(_case, _ctx, instance, _event, _op, _trace, _id), do: instance
 
   defp execute_step(machine, %{"op" => "start"}, trace, case) do
     append_lifecycle_trace(trace, case, "start")

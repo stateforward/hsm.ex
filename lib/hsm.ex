@@ -245,6 +245,11 @@ defmodule HSM.Transition do
             kind: :external
 end
 
+defmodule HSM.ActivityHandle do
+  @moduledoc false
+  defstruct path: nil, cancel: nil, metadata: nil
+end
+
 defmodule HSM.Snapshot do
   @moduledoc false
   defstruct ID: "", QualifiedName: "", State: "", Attributes: %{}, QueueLen: 0, Events: []
