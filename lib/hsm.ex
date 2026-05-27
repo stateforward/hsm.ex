@@ -94,6 +94,7 @@ defmodule HSM do
   def restart(instance, data \\ nil), do: Instance.restart(instance, data)
   def dispatch(instance, event), do: Instance.dispatch(instance, Event.coerce(event))
   def tick(instance, millis), do: Instance.tick(instance, millis)
+  def handle_timer(instance, timer_ref), do: Instance.handle_timer(instance, timer_ref)
   def call(instance, operation, args \\ []), do: Instance.call(instance, operation, args)
   def get(instance, name), do: Instance.get(instance, name)
   def set(instance, name, value), do: Instance.set(instance, name, value)
@@ -245,6 +246,9 @@ defmodule HSM do
       do: def(unquote(name)(instance, event), do: dispatch(instance, event) |> elem(0))
 
   for name <- [:Tick], do: def(unquote(name)(instance, millis), do: tick(instance, millis))
+
+  for name <- [:HandleTimer],
+      do: def(unquote(name)(instance, timer_ref), do: handle_timer(instance, timer_ref))
 
   for name <- [:Call],
       do: def(unquote(name)(instance, operation, args \\ []), do: call(instance, operation, args))
@@ -559,7 +563,7 @@ defmodule HSM.Clock do
   @moduledoc false
   defstruct sleep: nil, after: nil, new_timer: nil, now: nil
 
-  def default, do: %__MODULE__{now: &System.monotonic_time/1}
+  def default, do: %__MODULE__{new_timer: &default_new_timer/2, now: &System.monotonic_time/1}
   def new(nil), do: default()
   def new(%__MODULE__{} = clock), do: inherit_default(clock)
 
@@ -593,6 +597,28 @@ defmodule HSM.Clock do
     end
   end
 
+  def new_timer(%__MODULE__{} = clock, duration, message) do
+    cond do
+      is_function(clock.new_timer, 3) ->
+        clock.new_timer.(duration, message, self())
+
+      is_function(clock.new_timer, 2) ->
+        clock.new_timer.(duration, message)
+
+      is_function(clock.new_timer, 1) ->
+        clock.new_timer.(duration)
+
+      true ->
+        default_new_timer(duration, message)
+    end
+  end
+
+  def cancel_timer({:hsm_timer, ref}) when is_reference(ref), do: Process.cancel_timer(ref)
+  def cancel_timer(%{cancel: cancel}) when is_function(cancel, 0), do: cancel.()
+  def cancel_timer(%{ref: ref}) when is_reference(ref), do: Process.cancel_timer(ref)
+  def cancel_timer(ref) when is_reference(ref), do: Process.cancel_timer(ref)
+  def cancel_timer(_handle), do: false
+
   def now(clock, unit \\ :millisecond)
 
   def now(%__MODULE__{now: fun}, unit) when is_function(fun, 1), do: fun.(unit)
@@ -615,4 +641,10 @@ defmodule HSM.Clock do
       {:arity, 0} -> fun.()
     end
   end
+
+  defp default_new_timer(duration, message) when is_integer(duration) and duration >= 0 do
+    {:hsm_timer, Process.send_after(self(), message, duration)}
+  end
+
+  defp default_new_timer(_duration, _message), do: nil
 end

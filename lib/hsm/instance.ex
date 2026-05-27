@@ -139,6 +139,38 @@ defmodule HSM.Instance do
     fire_due_timers(instance)
   end
 
+  def handle_timer(%__MODULE__{} = instance, {:hsm_timer, timer_id}),
+    do: handle_timer(instance, timer_id)
+
+  def handle_timer(%__MODULE__{} = instance, timer_id) do
+    case Enum.split_with(instance.timers, &(&1.id == timer_id)) do
+      {[], _timers} ->
+        instance
+
+      {[timer | _], rest} ->
+        instance = %{instance | timers: rest}
+
+        instance =
+          if timer.kind == :every do
+            timer =
+              timer
+              |> Map.put(:due, instance.logical_time + timer.interval)
+              |> Map.put(:duration, timer.interval)
+              |> Map.put(:ref, nil)
+
+            %{instance | timers: instance.timers ++ [arm_timer(timer, instance)]}
+          else
+            instance
+          end
+
+        instance
+        |> enqueue_event(timer_event(timer))
+        |> elem(0)
+        |> process_event()
+        |> elem(0)
+    end
+  end
+
   def snapshot(%__MODULE__{} = instance) do
     %Snapshot{
       ID: unique_id(),
@@ -524,22 +556,99 @@ defmodule HSM.Instance do
       |> Enum.map(fn transition ->
         {kind, value} = transition.trigger
         interval = timer_value(instance, value)
+        duration = timer_duration(instance.logical_time, kind, interval)
+        timer_id = unique_id()
 
-        %{
-          source: path,
-          transition: transition,
-          kind: kind,
-          interval: interval,
-          clock_wait: Clock.wait(instance.clock, interval, %{instance: instance, path: path}),
-          due: timer_due(instance.logical_time, kind, interval)
-        }
+        timer =
+          %{
+            id: timer_id,
+            ref: nil,
+            source: path,
+            transition: transition,
+            kind: kind,
+            interval: interval,
+            duration: duration,
+            clock_wait: Clock.wait(instance.clock, duration, %{instance: instance, path: path}),
+            due: timer_due(instance.logical_time, kind, interval)
+          }
+
+        arm_timer(timer, instance)
       end)
 
     %{instance | timers: instance.timers ++ timers}
   end
 
+  defp arm_timer(timer, instance) do
+    ref =
+      Clock.new_timer(
+        instance.clock,
+        timer.duration,
+        {:hsm_timer, timer.id}
+      )
+
+    %{timer | ref: ref}
+  end
+
   defp cancel_timers(instance, path) do
-    %{instance | timers: Enum.reject(instance.timers, &(&1.source == path))}
+    {cancelled, active} = Enum.split_with(instance.timers, &(&1.source == path))
+    Enum.each(cancelled, &Clock.cancel_timer(&1.ref))
+    %{instance | timers: active}
+  end
+
+  defp fire_due_timers(instance) do
+    {due, pending} = Enum.split_with(instance.timers, &(&1.due <= instance.logical_time))
+    instance = %{instance | timers: pending}
+
+    Enum.reduce(due, instance, fn timer, acc ->
+      Clock.cancel_timer(timer.ref)
+
+      acc =
+        if timer.kind == :every do
+          timer =
+            timer
+            |> Map.put(:due, acc.logical_time + timer.interval)
+            |> Map.put(:duration, timer.interval)
+            |> Map.put(:ref, nil)
+
+          %{acc | timers: acc.timers ++ [arm_timer(timer, acc)]}
+        else
+          acc
+        end
+
+      acc
+      |> enqueue_event(timer_event(timer))
+      |> elem(0)
+      |> process_event()
+      |> elem(0)
+    end)
+  end
+
+  defp timer_event(timer) do
+    %Event{
+      name: "__timer_#{timer.kind}__",
+      kind: :timer_event,
+      data: %{source: timer.source, transition: timer.transition, timer: timer.id}
+    }
+  end
+
+  defp timer_trigger?({kind, _}) when kind in [:after, :every, :at], do: true
+  defp timer_trigger?(_), do: false
+
+  defp timer_value(_instance, value) when is_integer(value), do: value
+
+  defp timer_value(instance, value) when is_binary(value),
+    do: Map.fetch!(instance.attributes, value)
+
+  defp timer_value(instance, fun) when is_function(fun),
+    do: invoke(fun, instance, %Event{name: "TimerSchedule"})
+
+  defp timer_due(_now, :at, value), do: value
+  defp timer_due(now, _kind, value), do: now + value
+  defp timer_duration(now, :at, value), do: max(value - now, 0)
+  defp timer_duration(_now, _kind, value), do: value
+
+  defp run_actions(instance, actions, event) do
+    run_actions(instance, actions, event, %{action: :effect})
   end
 
   defp cancel_activities(instance, path, event) do
@@ -563,50 +672,6 @@ defmodule HSM.Instance do
           acc
       end
     end)
-  end
-
-  defp fire_due_timers(instance) do
-    {due, pending} = Enum.split_with(instance.timers, &(&1.due <= instance.logical_time))
-    instance = %{instance | timers: pending}
-
-    Enum.reduce(due, instance, fn timer, acc ->
-      acc =
-        if timer.kind == :every do
-          %{acc | timers: acc.timers ++ [%{timer | due: acc.logical_time + timer.interval}]}
-        else
-          acc
-        end
-
-      event = %Event{
-        name: "__timer_#{timer.kind}__",
-        kind: :timer_event,
-        data: %{source: timer.source, transition: timer.transition}
-      }
-
-      acc
-      |> enqueue_event(event)
-      |> elem(0)
-      |> process_event()
-      |> elem(0)
-    end)
-  end
-
-  defp timer_trigger?({kind, _}) when kind in [:after, :every, :at], do: true
-  defp timer_trigger?(_), do: false
-
-  defp timer_value(_instance, value) when is_integer(value), do: value
-
-  defp timer_value(instance, value) when is_binary(value),
-    do: Map.fetch!(instance.attributes, value)
-
-  defp timer_value(instance, fun) when is_function(fun),
-    do: invoke(fun, instance, %Event{name: "TimerSchedule"})
-
-  defp timer_due(_now, :at, value), do: value
-  defp timer_due(now, _kind, value), do: now + value
-
-  defp run_actions(instance, actions, event) do
-    run_actions(instance, actions, event, %{action: :effect})
   end
 
   defp run_activity_actions(instance, path, actions, event) do

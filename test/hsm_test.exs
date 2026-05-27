@@ -560,6 +560,68 @@ defmodule HSMTest do
     assert HSM.state(machine) == "/Clocked/done"
   end
 
+  test "default clock schedules cancellable host timer messages" do
+    model =
+      HSM.define("HostClock", [
+        HSM.initial(HSM.target("waiting")),
+        HSM.state("waiting", [
+          HSM.transition([HSM.after_ms(5), HSM.target("done")])
+        ]),
+        HSM.state("done")
+      ])
+
+    machine = model |> HSM.new() |> HSM.start()
+    assert HSM.state(machine) == "/HostClock/waiting"
+
+    assert_receive {:hsm_timer, timer_id}, 50
+
+    machine = HSM.handle_timer(machine, timer_id)
+    assert HSM.state(machine) == "/HostClock/done"
+  end
+
+  test "default clock timer is cancelled when source state exits" do
+    model =
+      HSM.define("HostClockCancel", [
+        HSM.initial(HSM.target("waiting")),
+        HSM.state("waiting", [
+          HSM.transition([HSM.after_ms(40), HSM.target("timeout")]),
+          HSM.transition([HSM.on("leave"), HSM.target("done")])
+        ]),
+        HSM.state("timeout"),
+        HSM.state("done")
+      ])
+
+    machine = model |> HSM.new() |> HSM.start()
+    {machine, :processed} = HSM.dispatch(machine, "leave")
+
+    assert HSM.state(machine) == "/HostClockCancel/done"
+    refute_receive {:hsm_timer, _timer_id}, 80
+  end
+
+  test "default clock reschedules every timers after host messages" do
+    {:ok, hits} = Agent.start_link(fn -> 0 end)
+
+    model =
+      HSM.define("HostEvery", [
+        HSM.initial(HSM.target("waiting")),
+        HSM.state("waiting", [
+          HSM.transition([
+            HSM.every_ms(5),
+            HSM.effect(fn -> Agent.update(hits, &(&1 + 1)) end)
+          ])
+        ])
+      ])
+
+    machine = model |> HSM.new() |> HSM.start()
+    assert_receive {:hsm_timer, first}, 50
+    machine = HSM.handle_timer(machine, first)
+    assert_receive {:hsm_timer, second}, 50
+    machine = HSM.handle_timer(machine, second)
+
+    assert HSM.state(machine) == "/HostEvery/waiting"
+    assert Agent.get(hits, & &1) == 2
+  end
+
   test "config id and name are observable through runtime helpers" do
     model =
       HSM.define("Named", [
