@@ -39,24 +39,104 @@ Implemented areas include:
 
 ## Usage
 
+This example uses the regular Elixir snake_case API and shows the main dispatch
+surfaces together: direct events, event objects with data, generated `on_set`
+and `on_call` events, deferred events, logical-time timers, snapshots, contexts,
+`dispatch_all`, and `dispatch_to`.
+
 ```elixir
 model =
-  HSM.define("Door", [
-    HSM.initial(HSM.target("closed")),
-    HSM.state("closed", [
+  HSM.define("Checkout", [
+    HSM.attribute("payment_received", :boolean, false),
+    HSM.attribute("attempts", :integer, 0),
+    HSM.operation("ship", fn _ctx, _instance, event ->
+      [%{carrier: carrier}] = Map.fetch!(event.data, :Args)
+      {:tracking, carrier}
+    end),
+    HSM.initial(HSM.target("cart")),
+    HSM.state("cart", [
+      HSM.transition([HSM.on("checkout"), HSM.target("authorizing")]),
+      HSM.transition([HSM.on("cancel"), HSM.target("cancelled")])
+    ]),
+    HSM.state("authorizing", [
+      HSM.entry(fn instance, _event ->
+        {attempts, true} = HSM.get(instance, "attempts")
+        HSM.set(instance, "attempts", attempts + 1)
+      end),
+      HSM.defer("cancel"),
+      HSM.transition([HSM.after_ms(30), HSM.target("expired")]),
       HSM.transition([
-        HSM.on("open"),
-        HSM.target("open")
+        HSM.on_set("payment_received"),
+        HSM.guard(fn instance, _event ->
+          HSM.get(instance, "payment_received") == {true, true}
+        end),
+        HSM.target("paid")
       ])
     ]),
-    HSM.state("open")
+    HSM.state("paid", [
+      HSM.transition([HSM.on_call("ship"), HSM.target("shipped")]),
+      HSM.transition([HSM.on("cancel"), HSM.target("cancelled")])
+    ]),
+    HSM.final("shipped"),
+    HSM.final("expired"),
+    HSM.final("cancelled")
   ])
 
-machine = model |> HSM.new() |> HSM.start()
-machine = HSM.dispatch(machine, "open")
+machine =
+  model
+  |> HSM.new(HSM.Config.new(id: "order-1"))
+  |> HSM.start()
+  |> HSM.dispatch(HSM.event("checkout", data: %{cart_id: "A-100"}))
+
+machine = HSM.set(machine, "payment_received", true)
+{machine, tracking} = HSM.call(machine, "ship", [%{carrier: "UPS"}])
+snapshot = HSM.take_snapshot(machine)
 
 HSM.state(machine)
-#=> "/Door/open"
+#=> "/Checkout/shipped"
+
+tracking
+#=> {:tracking, "UPS"}
+
+Map.fetch!(snapshot, :Attributes)
+#=> %{"/Checkout/attempts" => 1, "/Checkout/payment_received" => true}
+
+expired =
+  model
+  |> HSM.new(HSM.Config.new(id: "order-2"))
+  |> HSM.start()
+  |> HSM.dispatch("checkout")
+  |> HSM.tick(30)
+
+HSM.state(expired)
+#=> "/Checkout/expired"
+
+cancelled =
+  model
+  |> HSM.new(HSM.Config.new(id: "order-3"))
+  |> HSM.start()
+  |> HSM.dispatch("checkout")
+  |> HSM.dispatch("cancel")
+  |> HSM.set("payment_received", true)
+
+HSM.state(cancelled)
+#=> "/Checkout/cancelled"
+
+one = model |> HSM.new(HSM.Config.new(id: "one")) |> HSM.start()
+two = model |> HSM.new(HSM.Config.new(id: "two")) |> HSM.start()
+
+ctx =
+  HSM.make_context()
+  |> HSM.Context.register(one)
+  |> HSM.Context.register(two)
+  |> HSM.dispatch_to("checkout", ["one"])
+  |> HSM.dispatch_all("cancel")
+
+HSM.state(ctx.machines["one"])
+#=> "/Checkout/authorizing"
+
+HSM.state(ctx.machines["two"])
+#=> "/Checkout/cancelled"
 ```
 
 The shared DSL specifies PascalCase API names. Elixir reserves uppercase
