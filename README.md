@@ -8,8 +8,9 @@ language implementation.
 
 ## Status
 
-This repository contains the initial Elixir runtime and tests for the shared HSM
-DSL contract. Implemented areas include:
+This package is fully conformant with the current shared HSM JSON IR suite and
+DSL contract. The current full shared suite run is `1390 ok / 0 fail / 0 skip`.
+Implemented areas include:
 
 - model definition, redefinition, validators/finalizers, states, final states,
   submachine states, entry/exit points, transitions, initial transitions
@@ -89,32 +90,28 @@ mix test
 mix hsm.conformance ../conformance/cases/*.json
 ```
 
-The current suite passes all supported shared JSON conformance cases. Coverage
-includes core transition flow, nested initial entry, guard selection, choice
-fallback, history defaults, root completion transitions, source-qualified
-transitions, deferred replay, `on_call`, timer behavior sources, transition
-kinds, lifecycle restart/stop, validation, snapshots, group dispatch, group
-snapshots, broadcast dispatch, dispatch-to targeting, event ownership, path
-resolution, model-registry redefinition lowering, nested dispatch reentrancy,
-normalized behavior errors, custom queue hooks, clock hooks, host-clock timer
-cancellation, typed attribute writes, event/kind helpers, deterministic async
-ordering, cancellable activity handles, activity failure message handling,
-native submachine composition for child state flow, child timers, child defers,
-source-qualified child transitions, child attribute/default behavior where
-scoped reuse is not required, child operation/on_call binding, cross-cutting
-submachine snapshots and async/activity basics, entry-point target lowering,
-basic exit-point routing, most submachine event-data/generated-trigger replay
-cases, and
-submachine/model-registry validation, scoped child-defer cleanup on parent
-submachine exit, and deferred replay priority after exit-point handlers and
-final-state completion, source-qualified/root exit-point handler lowering, and
-exit-point handoff into entry-point targets, completion priority over nested
-dispatch, child-model timer/activity/operation all-ops reentrancy, submachine
-exit-point boundary ordering, nested boundary ordering, guard fallthrough to an
-ancestor handler, self reentry through an entry point, and selected generated
-trigger and event-data fallthrough replay cases, submodel/root exit-point
-fallthrough routing, and unhandled exit-point errors. The current full shared
-suite run is `1390 ok / 0 fail / 0 skip`.
+The Elixir runtime passes the current full shared JSON conformance suite:
+`1390 ok / 0 fail / 0 skip`. Coverage includes core transition flow, nested
+initial entry, guard selection, choice fallback, history defaults, root
+completion transitions, source-qualified transitions, deferred replay, `on_call`,
+timer behavior sources, transition kinds, lifecycle restart/stop, validation,
+snapshots, group dispatch, group snapshots, broadcast dispatch, dispatch-to
+targeting, event ownership, path resolution, model-registry redefinition
+lowering, nested dispatch reentrancy, normalized behavior errors, custom queue
+hooks, clock hooks, host-clock timer cancellation, typed attribute writes,
+event/kind helpers, deterministic async ordering, cancellable activity handles,
+activity failure message handling, native submachine composition, child timers,
+child defers, source-qualified child transitions, child attribute/default
+behavior, child operation/on_call binding, cross-cutting submachine snapshots,
+entry-point target lowering, exit-point routing, submachine event-data and
+generated-trigger replay, submachine/model-registry validation, scoped
+child-defer cleanup on parent submachine exit, deferred replay priority after
+exit-point handlers and final-state completion, source-qualified/root exit-point
+handler lowering, exit-point handoff into entry-point targets, completion
+priority over nested dispatch, child-model timer/activity/operation all-ops
+reentrancy, submachine exit-point boundary ordering, nested boundary ordering,
+guard fallthrough to an ancestor handler, self reentry through an entry point,
+submodel/root exit-point fallthrough routing, and unhandled exit-point errors.
 
-The conformance runner executes supported shared JSON cases and exits `77` when
-all requested cases are explicit unsupported-feature skips.
+The conformance runner retains exit `77` for forward-compatible explicit
+unsupported-feature skips in future suites; the current suite has no skips.
