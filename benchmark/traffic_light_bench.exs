@@ -141,11 +141,10 @@ defmodule TrafficLightBench do
     light = HSM.new(model) |> HSM.start()
     assert_traffic_light(light, "/TrafficLight/operational/red", 0, 0, "initial")
 
-    {light, status} = HSM.dispatch(light, @car_arrival)
-    unless status == :processed, do: raise("dispatch did not return :processed")
+    light = HSM.dispatch(light, @car_arrival)
     assert_traffic_light(light, "/TrafficLight/operational/red", 1, 0, "after CarArrival")
 
-    {light, :processed} = HSM.dispatch(light, @timer_event)
+    light = HSM.dispatch(light, @timer_event)
 
     assert_traffic_light(
       light,
@@ -155,7 +154,7 @@ defmodule TrafficLightBench do
       "after first TimerEvent"
     )
 
-    {light, :processed} = HSM.dispatch(light, @timer_event)
+    light = HSM.dispatch(light, @timer_event)
 
     assert_traffic_light(
       light,
@@ -165,16 +164,16 @@ defmodule TrafficLightBench do
       "after second TimerEvent"
     )
 
-    {light, :processed} = HSM.dispatch(light, @timer_event)
+    light = HSM.dispatch(light, @timer_event)
     assert_traffic_light(light, "/TrafficLight/operational/red", 1, 40, "after third TimerEvent")
   end
 
   defp dispatch_batch(light, cycles) do
     Enum.reduce(1..cycles, light, fn _, current ->
-      {current, _} = HSM.dispatch(current, @car_arrival)
-      {current, _} = HSM.dispatch(current, @timer_event)
-      {current, _} = HSM.dispatch(current, @timer_event)
-      {current, _} = HSM.dispatch(current, @timer_event)
+      current = HSM.dispatch(current, @car_arrival)
+      current = HSM.dispatch(current, @timer_event)
+      current = HSM.dispatch(current, @timer_event)
+      current = HSM.dispatch(current, @timer_event)
       current
     end)
   end
