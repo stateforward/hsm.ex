@@ -493,17 +493,27 @@ defmodule HSM.Instance do
         |> candidate_transitions(instance, :local, event)
         |> matching_transition(instance, event)
 
+      parent_transition =
+        candidates
+        |> candidate_transitions(instance, :parent, event)
+        |> matching_transition(instance, event)
+
+      defer = deferred_trigger(instance.model.states[path].defer, event.name)
+
       cond do
         local_transition ->
           local_transition
 
-        defer = deferred_trigger(instance.model.states[path].defer, event.name) ->
+        parent_transition &&
+            (defer == nil ||
+               transition_handles_at_or_below?(parent_transition, path, instance.model.root)) ->
+          parent_transition
+
+        defer ->
           {:defer, path, defer}
 
         true ->
-          candidates
-          |> candidate_transitions(instance, :parent, event)
-          |> matching_transition(instance, event)
+          nil
       end
     end)
   end
@@ -513,6 +523,15 @@ defmodule HSM.Instance do
       trigger_matches?(instance, transition, event) and guard_passes?(instance, transition, event)
     end)
   end
+
+  defp transition_handles_at_or_below?(%Transition{} = transition, owner, model_root) do
+    (transition.source == owner and DSL.parent(owner) == model_root) or
+      path_below_scope?(transition.source, owner) or
+      transition_declared_at_or_below?(transition, owner)
+  end
+
+  defp transition_declared_at_or_below?(%Transition{} = transition, owner),
+    do: transition.owner == owner or path_below_scope?(transition.owner, owner)
 
   defp transition_candidates(instance, path) do
     Map.fetch!(instance.model.transition_candidates, path)

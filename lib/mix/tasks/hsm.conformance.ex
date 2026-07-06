@@ -61,6 +61,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
                         "dispatch_to",
                         "multi_target",
                         "event_ownership",
+                        "runtime_context",
                         "submachine",
                         "entry_point",
                         "exit_point",
@@ -1735,6 +1736,18 @@ defmodule Mix.Tasks.Hsm.Conformance do
          _ctx,
          _instance,
          event,
+         %{"op" => "event_application_metadata_equals", "name" => name, "value" => value},
+         _trace,
+         _id
+       ) do
+    {:return, event_application_metadata(event, name) == value}
+  end
+
+  defp execute_behavior_op(
+         _case,
+         _ctx,
+         _instance,
+         event,
          %{"op" => "event_metadata_equals", "name" => name, "value" => value},
          _trace,
          _id
@@ -1827,6 +1840,20 @@ defmodule Mix.Tasks.Hsm.Conformance do
     message = op["value"] || "behavior error"
     append_error(trace, code, message)
     throw({:behavior_error, code, message})
+  end
+
+  defp execute_behavior_op(
+         case,
+         _ctx,
+         instance,
+         _event,
+         %{"op" => "dispatch", "event" => event, "instance" => target},
+         trace,
+         _id
+       ) do
+    event = event_from_value(event)
+    append_trace(trace, %{"type" => "dispatch", "event" => event.name, "target" => target})
+    dispatch_from_behavior_target(instance, event, target, trace, case)
   end
 
   defp execute_behavior_op(
@@ -2798,7 +2825,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
           name == "push_error" ->
             append_trace(trace, %{"type" => "trace", "value" => "queue:push-error:#{event.name}"})
             append_error(trace, "runtime_error", "queue push error")
-            nil
+            %HSM.ValidationError{message: "queue push error"}
 
           name == "len_seven" ->
             nil
@@ -2976,7 +3003,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
                 {id,
                  dispatch_without_current_processing(
                    machine,
-                   event_for_target(event, id),
+                   event_for_target(event, id, instance.id),
                    trace,
                    case
                  )}
@@ -3012,7 +3039,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
                 true ->
                   dispatch_without_current_processing(
                     machine,
-                    event_for_target(event, target),
+                    event_for_target(event, target, instance.id),
                     trace,
                     case
                   )
@@ -3026,7 +3053,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
 
         if target == instance.id do
           trace_pre_defer(trace, case, instance, event)
-          HSM.Instance.dispatch(instance, event) |> elem(0)
+          HSM.Instance.dispatch(instance, event_for_target(event, target, instance.id)) |> elem(0)
         else
           instance
         end
@@ -3048,7 +3075,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
           |> Enum.filter(fn id ->
             match?(%{started?: true}, Map.get(env.machines, id))
           end)
-          |> Enum.map(fn id -> {id, event_for_target(event, id)} end)
+          |> Enum.map(fn id -> {id, event_for_target(event, id, instance.id)} end)
 
         Process.put(
           :hsm_conformance_pending_multi_dispatches,
@@ -3059,7 +3086,9 @@ defmodule Mix.Tasks.Hsm.Conformance do
 
         if instance.id in members do
           trace_pre_defer(trace, case, instance, event)
-          HSM.Instance.dispatch(instance, event) |> elem(0)
+
+          HSM.Instance.dispatch(instance, event_for_target(event, instance.id, instance.id))
+          |> elem(0)
         else
           instance
         end
@@ -3106,9 +3135,22 @@ defmodule Mix.Tasks.Hsm.Conformance do
     updated
   end
 
-  defp event_for_target(%HSM.Event{target: ""} = event, target), do: %{event | target: target}
-  defp event_for_target(%HSM.Event{target: nil} = event, target), do: %{event | target: target}
-  defp event_for_target(event, _target), do: event
+  defp event_for_target(event, target, source \\ nil) do
+    event
+    |> put_event_target(target)
+    |> put_event_source(source)
+  end
+
+  defp put_event_target(%HSM.Event{target: target} = event, id) when target in ["", nil],
+    do: %{event | target: id}
+
+  defp put_event_target(event, _id), do: event
+  defp put_event_source(event, nil), do: event
+
+  defp put_event_source(%HSM.Event{source: source} = event, id) when source in ["", nil],
+    do: %{event | source: id}
+
+  defp put_event_source(event, _id), do: event
 
   defp dispatch_to_stable(case, _id, machine) do
     if "model_registry" in (case["features"] || []), do: HSM.state(machine), else: machine.id
@@ -3268,6 +3310,13 @@ defmodule Mix.Tasks.Hsm.Conformance do
     end
   end
 
+  defp event_application_metadata(event, name) do
+    case event.schema do
+      metadata when is_map(metadata) -> Map.get(metadata, name)
+      _ -> nil
+    end
+  end
+
   defp clear_behavior_event_metadata do
     Process.delete(:hsm_conformance_event_key)
     Process.delete(:hsm_conformance_event_metadata)
@@ -3407,9 +3456,15 @@ defmodule Mix.Tasks.Hsm.Conformance do
     do: require_only!(op, ["op", "path"])
 
   defp validate_behavior_op!(%{"op" => op} = spec)
-       when op in ["event_metadata_get", "event_metadata_set", "event_metadata_equals"] do
+       when op in [
+              "event_application_metadata_equals",
+              "event_metadata_get",
+              "event_metadata_set",
+              "event_metadata_equals"
+            ] do
     keys =
       case op do
+        "event_application_metadata_equals" -> ["op", "name", "value"]
         "event_metadata_get" -> ["op", "name"]
         "event_metadata_set" -> ["op", "name", "value"]
         "event_metadata_equals" -> ["op", "name", "value"]
