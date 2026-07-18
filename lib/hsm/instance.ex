@@ -88,7 +88,7 @@ defmodule HSM.Instance do
     |> cancel_all_timers()
     |> Map.merge(%{
       started?: false,
-      state: instance.model.root,
+      state: "",
       queue: reset_queue(instance.queue),
       deferred: [],
       active_activities: [],

@@ -22,7 +22,10 @@ defmodule HSMTest do
         ])
       ])
 
-    machine = model |> HSM.new() |> HSM.start()
+    machine = HSM.new(model)
+    assert HSM.state(machine) == ""
+
+    machine = HSM.start(machine)
     {machine, :processed} = HSM.Instance.dispatch(machine, "open")
 
     assert HSM.state(machine) == "/Door/open"
@@ -2344,7 +2347,7 @@ defmodule HSMTest do
     assert HSM.state(machine) == "/Lifecycle/idle"
 
     machine = HSM.stop(machine)
-    assert HSM.state(machine) == "/Lifecycle"
+    assert HSM.state(machine) == ""
 
     machine = HSM.start(machine)
     assert HSM.state(machine) == "/Lifecycle/idle"
@@ -2527,7 +2530,7 @@ defmodule HSMTest do
     assert HSM.state(group) == ["/GroupedPublic/idle", "/GroupedPublic/idle"]
 
     group = HSM.stop(group)
-    assert HSM.state(group) == ["/GroupedPublic", "/GroupedPublic"]
+    assert HSM.state(group) == ["", ""]
 
     assert apply(HSM, :MakeGroup, []) == %HSM.Group{id: "", machines: []}
   end
