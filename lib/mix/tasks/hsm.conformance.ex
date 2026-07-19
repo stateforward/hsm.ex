@@ -1960,7 +1960,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
   defp execute_step(machine, %{"op" => "start"}, trace, case) do
     cond do
       machine.started? ->
-        append_error(trace, "lifecycle_error", "already started HSM")
+        append_error(trace, "runtime_error", "already started HSM")
         machine
 
       true ->
@@ -2016,7 +2016,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
     {machine, status} =
       cond do
         !machine.started? ->
-          append_error(trace, "lifecycle_error", "dispatch requires a started HSM")
+          append_error(trace, "runtime_error", "dispatch requires a started HSM")
           {machine, :not_started}
 
         true ->
@@ -2080,7 +2080,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
             machine
         end
       else
-        append_error(trace, "lifecycle_error", "set requires a started HSM")
+        append_error(trace, "runtime_error", "set requires a started HSM")
         machine
       end
 
@@ -2094,7 +2094,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
     machine =
       cond do
         !machine.started? ->
-          append_error(trace, "lifecycle_error", "operation requires a started HSM")
+          append_error(trace, "runtime_error", "operation requires a started HSM")
           machine
 
         true ->
@@ -2124,7 +2124,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
       append_trace(trace, %{"type" => "snapshot", "state" => snapshot["state"]})
       machine
     else
-      append_error(trace, "lifecycle_error", "take snapshot requires a started HSM")
+      append_error(trace, "runtime_error", "take snapshot requires a started HSM")
       machine
     end
   end
@@ -2191,7 +2191,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
 
       machine
     else
-      append_error(trace, "lifecycle_error", "restart requires a started HSM")
+      append_error(trace, "runtime_error", "restart requires a started HSM")
       machine
     end
   end
@@ -2209,7 +2209,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
       machine
     else
       if trace_expects?(case, "error") do
-        append_error(trace, "lifecycle_error", "stop requires a started HSM")
+        append_error(trace, "runtime_error", "stop requires a started HSM")
       end
 
       machine
@@ -2825,7 +2825,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
           name == "push_error" ->
             append_trace(trace, %{"type" => "trace", "value" => "queue:push-error:#{event.name}"})
             append_error(trace, "runtime_error", "queue push error")
-            %HSM.ValidationError{message: "queue push error"}
+            %RuntimeError{message: "queue push error"}
 
           name == "len_seven" ->
             nil
@@ -2847,7 +2847,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
           name == "pop_error_once" and state.pushed? and state.pop_error? ->
             append_trace(trace, %{"type" => "trace", "value" => "queue:pop-error"})
             update_queue_state(key, &%{&1 | pop_error?: false})
-            %HSM.ValidationError{message: "queue pop error"}
+            %RuntimeError{message: "queue pop error"}
 
           state.events == [] ->
             nil
@@ -2885,7 +2885,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
             append_trace(trace, %{"type" => "trace", "value" => "queue:len-error"})
             update_queue_state(key, &%{&1 | len_error?: false})
             Process.put(:hsm_conformance_queue_len_error, true)
-            %HSM.ValidationError{message: "queue len error"}
+            %RuntimeError{message: "queue len error"}
 
           true ->
             length(state.events)

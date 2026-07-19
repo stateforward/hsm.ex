@@ -274,7 +274,7 @@ defmodule HSMTest do
 
     assert HSM.get(machine, "count") == {2, true}
 
-    assert_raise HSM.ValidationError, ~r/expected :integer/, fn ->
+    assert_raise RuntimeError, ~r/expected :integer/, fn ->
       HSM.set(machine, "count", "two")
     end
   end
@@ -1203,7 +1203,7 @@ defmodule HSMTest do
 
     machine = HSM.new(model)
 
-    assert_raise HSM.ValidationError, ~r/operation requires a started HSM/, fn ->
+    assert_raise RuntimeError, ~r/operation requires a started HSM/, fn ->
       HSM.call(machine, "audit")
     end
 
@@ -1390,7 +1390,7 @@ defmodule HSMTest do
 
     assert HSM.get(machine, "count") == {nil, false}
 
-    assert_raise HSM.ValidationError, ~r/set requires a started HSM/, fn ->
+    assert_raise RuntimeError, ~r/set requires a started HSM/, fn ->
       HSM.set(machine, "count", 1)
     end
   end
@@ -1426,7 +1426,7 @@ defmodule HSMTest do
 
     machine = HSM.new(model)
 
-    assert_raise HSM.ValidationError, ~r/take snapshot requires a started HSM/, fn ->
+    assert_raise RuntimeError, ~r/take snapshot requires a started HSM/, fn ->
       HSM.take_snapshot(machine)
     end
   end
@@ -2392,13 +2392,13 @@ defmodule HSMTest do
 
     machine = HSM.new(model)
 
-    assert_raise HSM.ValidationError, ~r/requires a started HSM/, fn ->
+    assert_raise RuntimeError, ~r/requires a started HSM/, fn ->
       HSM.restart(machine)
     end
 
     machine = HSM.start(machine)
 
-    assert_raise HSM.ValidationError, ~r/already started HSM/, fn ->
+    assert_raise RuntimeError, ~r/already started HSM/, fn ->
       HSM.start(machine)
     end
 
@@ -2417,24 +2417,24 @@ defmodule HSMTest do
 
     machine = HSM.new(model)
 
-    assert {^machine, {:error, %HSM.ValidationError{message: "dispatch requires a started HSM"}}} =
+    assert {^machine, {:error, %RuntimeError{message: "dispatch requires a started HSM"}}} =
              HSM.dispatch(machine, "go")
 
-    assert {^machine, {:error, %HSM.ValidationError{message: "dispatch requires a started HSM"}}} =
+    assert {^machine, {:error, %RuntimeError{message: "dispatch requires a started HSM"}}} =
              apply(HSM, :Dispatch, [machine, "go"])
 
-    assert {^machine, {:error, %HSM.ValidationError{message: "dispatch requires a started HSM"}}} =
+    assert {^machine, {:error, %RuntimeError{message: "dispatch requires a started HSM"}}} =
              HSM.Instance.dispatch(machine, "go")
 
     stopped = machine |> HSM.start() |> HSM.stop()
 
-    assert {^stopped, {:error, %HSM.ValidationError{message: "dispatch requires a started HSM"}}} =
+    assert {^stopped, {:error, %RuntimeError{message: "dispatch requires a started HSM"}}} =
              HSM.dispatch(stopped, "go")
 
-    assert {^stopped, {:error, %HSM.ValidationError{message: "dispatch requires a started HSM"}}} =
+    assert {^stopped, {:error, %RuntimeError{message: "dispatch requires a started HSM"}}} =
              HSM.Instance.dispatch(stopped, "go")
 
-    assert {:error, %HSM.ValidationError{message: "dispatch requires a started HSM"}} =
+    assert {:error, %RuntimeError{message: "dispatch requires a started HSM"}} =
              apply(HSM, :Dispatch, [HSM.make_context(), nil, "go"])
   end
 
@@ -2750,8 +2750,24 @@ defmodule HSMTest do
 
     {_queue, error} = HSM.Queue.push(queue, "go")
 
-    assert %HSM.ValidationError{} = error
+    assert %RuntimeError{} = error
     assert error.message =~ "must be synchronous"
+  end
+
+  test "queue pop hook propagates exception structs" do
+    for error <- [
+          %RuntimeError{message: "runtime queue error"},
+          %HSM.ValidationError{message: "validation queue error"}
+        ] do
+      queue =
+        HSM.queue(%{
+          push: fn _event -> nil end,
+          pop: fn -> error end,
+          len: fn -> 0 end
+        })
+
+      assert {_queue, ^error} = HSM.Queue.pop(queue)
+    end
   end
 
   test "clock hooks are applied when timers are scheduled" do
@@ -4566,7 +4582,7 @@ defmodule HSMTest do
       ])
     end
 
-    assert_raise HSM.ValidationError, ~r/sequential behavior must not return Task/, fn ->
+    assert_raise RuntimeError, ~r/sequential behavior must not return Task/, fn ->
       HSM.define("AsyncGuard", [
         HSM.initial(HSM.target("idle")),
         HSM.state("idle", [
@@ -4802,7 +4818,7 @@ defmodule HSMTest do
 
       assert status == 1
       assert output =~ "unexpected error"
-      assert output =~ "lifecycle_error"
+      assert output =~ "runtime_error"
     after
       File.rm(tmp)
     end

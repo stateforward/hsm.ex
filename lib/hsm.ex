@@ -180,7 +180,7 @@ defmodule HSM do
         dispatch(ctx, target, event)
 
       _missing ->
-        {:error, struct(HSM.ValidationError, message: "dispatch requires a started HSM")}
+        {:error, %RuntimeError{message: "dispatch requires a started HSM"}}
     end
   end
 
@@ -197,7 +197,7 @@ defmodule HSM do
   def call(%Context{} = ctx, nil, operation, args) do
     case Context.from_context(ctx) do
       {%Instance{} = instance, true} -> call(ctx, instance, operation, args)
-      _missing -> raise HSM.ValidationError, message: "operation requires a started HSM"
+      _missing -> raise RuntimeError, message: "operation requires a started HSM"
     end
   end
 
@@ -225,7 +225,7 @@ defmodule HSM do
   def set(%Context{} = ctx, nil, name, value) do
     case Context.from_context(ctx) do
       {%Instance{} = instance, true} -> set(ctx, instance, name, value)
-      _missing -> raise HSM.ValidationError, message: "set requires a started HSM"
+      _missing -> raise RuntimeError, message: "set requires a started HSM"
     end
   end
 
@@ -790,11 +790,21 @@ defmodule HSM.Queue do
 
   def pop(%__MODULE__{hooks: hooks} = queue, context) when not is_nil(hooks) do
     case invoke_hook(hooks.pop, [context], "Pop/pop") do
-      nil -> {queue, nil}
-      %ValidationError{} = error -> {queue, error}
-      %_{} = event -> {queue, Event.coerce(event)}
-      event when is_binary(event) or is_map(event) -> {queue, Event.coerce(event)}
-      error -> {queue, error}
+      nil ->
+        {queue, nil}
+
+      %_{} = value ->
+        if is_exception(value) do
+          {queue, value}
+        else
+          {queue, Event.coerce(value)}
+        end
+
+      event when is_binary(event) or is_map(event) ->
+        {queue, Event.coerce(event)}
+
+      error ->
+        {queue, error}
     end
   end
 
@@ -879,7 +889,7 @@ defmodule HSM.Queue do
     result = apply(fun, args)
 
     if awaitable?(result) do
-      %ValidationError{message: "Queue #{label} must be synchronous"}
+      %RuntimeError{message: "Queue #{label} must be synchronous"}
     else
       result
     end

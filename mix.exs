@@ -4,7 +4,7 @@ defmodule HSM.MixProject do
   def project do
     [
       app: :hsm,
-      version: "1.3.2",
+      version: "1.3.3",
       elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
       deps: [],

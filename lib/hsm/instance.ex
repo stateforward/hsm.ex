@@ -12,8 +12,7 @@ defmodule HSM.Instance do
     Queue,
     Snapshot,
     Transition,
-    TransitionSnapshot,
-    ValidationError
+    TransitionSnapshot
   }
 
   @exit_point_final_marker "//__hsm_exit__/"
@@ -56,7 +55,7 @@ defmodule HSM.Instance do
   def start(instance, data \\ @missing)
 
   def start(%__MODULE__{started?: true}, _data) do
-    raise ValidationError, message: "already started HSM"
+    raise RuntimeError, message: "already started HSM"
   end
 
   def start(%__MODULE__{} = instance, data) do
@@ -99,7 +98,7 @@ defmodule HSM.Instance do
   def restart(instance, data \\ @missing)
 
   def restart(%__MODULE__{started?: false}, _data) do
-    raise ValidationError, message: "restart requires a started HSM"
+    raise RuntimeError, message: "restart requires a started HSM"
   end
 
   def restart(%__MODULE__{} = instance, data), do: instance |> stop() |> start(data)
@@ -115,20 +114,20 @@ defmodule HSM.Instance do
   end
 
   def set(%__MODULE__{started?: false}, _name, _value) do
-    raise ValidationError, message: "set requires a started HSM"
+    raise RuntimeError, message: "set requires a started HSM"
   end
 
   def set(%__MODULE__{} = instance, name, value) when is_binary(name) do
     key = attribute_key(instance, name)
 
     unless Map.has_key?(instance.model.attributes, key) do
-      raise ValidationError, message: "unknown attribute #{inspect(name)}"
+      raise RuntimeError, message: "unknown attribute #{inspect(name)}"
     end
 
     type = Map.get(instance.model.attribute_types, key, :any)
 
     unless value_matches_type?(value, type) do
-      raise ValidationError,
+      raise RuntimeError,
         message: "attribute #{inspect(name)} expected #{inspect(type)}, got #{inspect(value)}"
     end
 
@@ -152,7 +151,7 @@ defmodule HSM.Instance do
   def call(instance, name, args \\ [])
 
   def call(%__MODULE__{started?: false}, _name, _args) do
-    raise ValidationError, message: "operation requires a started HSM"
+    raise RuntimeError, message: "operation requires a started HSM"
   end
 
   def call(%__MODULE__{} = instance, name, args) do
@@ -168,7 +167,7 @@ defmodule HSM.Instance do
     {key, callback} = operation_callback(instance, name, context)
 
     unless is_function(callback) do
-      raise ValidationError, message: "unknown operation #{inspect(name)}"
+      raise RuntimeError, message: "unknown operation #{inspect(name)}"
     end
 
     qualified_name = qualified_member_name(instance, key)
@@ -201,7 +200,7 @@ defmodule HSM.Instance do
   end
 
   def dispatch(%__MODULE__{started?: false} = instance, _event),
-    do: {instance, {:error, %ValidationError{message: "dispatch requires a started HSM"}}}
+    do: {instance, {:error, %RuntimeError{message: "dispatch requires a started HSM"}}}
 
   def dispatch(%__MODULE__{} = instance, %Event{schema: nil} = event),
     do: dispatch_event(instance, event)
@@ -309,7 +308,7 @@ defmodule HSM.Instance do
 
   def snapshot(%__MODULE__{} = instance) do
     if !instance.started? do
-      raise ValidationError, message: "take snapshot requires a started HSM"
+      raise RuntimeError, message: "take snapshot requires a started HSM"
     end
 
     %Snapshot{
@@ -1127,7 +1126,7 @@ defmodule HSM.Instance do
     case instance.model.states[instance.state] do
       %Node{path: path} = node ->
         if exit_point_final_node?(node) do
-          raise ValidationError,
+          raise RuntimeError,
             message: "unhandled_exit_point #{exit_point_name_from_final_path(path)}"
         else
           instance
@@ -1716,7 +1715,7 @@ defmodule HSM.Instance do
   defp operation_callback!(instance, name, context) do
     case operation_callback(instance, name, context) do
       {key, fun} when is_function(fun) -> {key, fun}
-      _missing -> raise ValidationError, message: "unknown operation #{inspect(name)}"
+      _missing -> raise RuntimeError, message: "unknown operation #{inspect(name)}"
     end
   end
 
@@ -1906,7 +1905,7 @@ defmodule HSM.Instance do
   end
 
   defp reject_async_result!(%Task{}) do
-    raise ValidationError, message: "sequential behavior must not return Task"
+    raise RuntimeError, message: "sequential behavior must not return Task"
   end
 
   defp reject_async_result!(_value), do: :ok
@@ -2565,7 +2564,7 @@ defmodule HSM.Instance do
   defp put_or_delete(key, []), do: Process.delete(key)
   defp put_or_delete(key, value), do: Process.put(key, value)
 
-  defp handle_runtime_error(instance, %ValidationError{} = error),
+  defp handle_runtime_error(instance, %RuntimeError{} = error),
     do: handle_runtime_error(instance, error.message)
 
   defp handle_runtime_error(instance, error) do
