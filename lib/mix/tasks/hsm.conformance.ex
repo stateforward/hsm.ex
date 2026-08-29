@@ -58,6 +58,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
                         "stop",
                         "group",
                         "broadcast",
+                        "dispatch_result",
                         "dispatch_to",
                         "multi_target",
                         "event_ownership",
@@ -140,6 +141,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
         :hsm_conformance_activity_behavior_error,
         :hsm_conformance_deferred,
         :hsm_conformance_last_error,
+        :hsm_conformance_last_dispatch_queued,
         :hsm_conformance_multi_env,
         :hsm_conformance_model_index,
         :hsm_conformance_nested_dispatch,
@@ -147,6 +149,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
         :hsm_conformance_queue_len_error,
         :hsm_conformance_replay,
         :hsm_conformance_snapshots,
+        :hsm_conformance_stable_label,
         :hsm_conformance_timer_guard_fire,
         :hsm_runtime_action_context,
         :hsm_runtime_call_depth,
@@ -293,10 +296,17 @@ defmodule Mix.Tasks.Hsm.Conformance do
 
       machine =
         Enum.reduce(case["script"], machine, fn step, acc ->
+          if step["op"] != "expect", do: Process.delete(:hsm_conformance_stable_label)
           execute_step(acc, step, trace, case)
         end)
 
-      append_trace(trace, %{"type" => "stable", "state" => HSM.state(machine)})
+      append_trace(
+        trace,
+        %{
+          "type" => "stable",
+          "state" => Process.get(:hsm_conformance_stable_label, HSM.state(machine))
+        }
+      )
 
       assert_expect(
         case["expect"],
@@ -2041,6 +2051,12 @@ defmodule Mix.Tasks.Hsm.Conformance do
           end
       end
 
+    Process.put(
+      :hsm_conformance_last_dispatch_queued,
+      original.started? and status not in [:not_started, :error] and
+        not match?({:error, _}, status)
+    )
+
     if status == :deferred and deferred_event_present?(machine, event.name) do
       unless pre_deferred? do
         append_trace(trace, %{"type" => "defer", "event" => event.name})
@@ -2055,6 +2071,19 @@ defmodule Mix.Tasks.Hsm.Conformance do
     machine = drain_nested_dispatch(machine)
     clear_behavior_event_metadata()
     machine
+  end
+
+  defp execute_step(machine, %{"op" => "dispatch_all", "event" => event}, trace, case) do
+    event = event_from_value(event)
+    append_trace(trace, %{"type" => "dispatch", "event" => event.name, "target" => "all"})
+    Process.put(:hsm_conformance_last_dispatch_queued, machine.started?)
+    Process.put(:hsm_conformance_stable_label, "all")
+
+    if machine.started? do
+      dispatch_machine_with_trace(machine, event, trace, case)
+    else
+      machine
+    end
   end
 
   defp execute_step(machine, %{"op" => "set", "attribute" => attr, "value" => value}, trace, case) do
@@ -2371,6 +2400,11 @@ defmodule Mix.Tasks.Hsm.Conformance do
     event = event_from_value(event)
     append_trace(trace, %{"type" => "dispatch", "event" => event.name, "target" => "all"})
 
+    Process.put(
+      :hsm_conformance_last_dispatch_queued,
+      Enum.any?(env.machines, fn {_id, machine} -> match?(%{started?: true}, machine) end)
+    )
+
     machines =
       Map.new(env.machines, fn {id, machine} ->
         if machine.started? do
@@ -2393,10 +2427,16 @@ defmodule Mix.Tasks.Hsm.Conformance do
     append_trace(trace, %{"type" => "dispatch", "event" => event.name, "target" => group_id})
 
     unless Map.has_key?(env.groups, group_id) do
+      Process.put(:hsm_conformance_last_dispatch_queued, false)
       append_error(trace, "runtime_error", "unknown group #{group_id}")
       %{env | stable: first_state(env.machines)}
     else
       members = Map.fetch!(env.groups, group_id)
+
+      Process.put(
+        :hsm_conformance_last_dispatch_queued,
+        Enum.any?(members, fn id -> match?(%{started?: true}, Map.get(env.machines, id)) end)
+      )
 
       machines =
         Enum.reduce(members, env.machines, fn id, acc ->
@@ -2446,6 +2486,11 @@ defmodule Mix.Tasks.Hsm.Conformance do
     event = event_from_value(event)
     append_trace(trace, %{"type" => "dispatch", "event" => event.name, "target" => targets})
 
+    Process.put(
+      :hsm_conformance_last_dispatch_queued,
+      Enum.any?(targets, fn id -> match?(%{started?: true}, Map.get(env.machines, id)) end)
+    )
+
     machines =
       targets
       |> Enum.uniq()
@@ -2474,6 +2519,11 @@ defmodule Mix.Tasks.Hsm.Conformance do
        ) do
     event = event_from_value(event)
     append_trace(trace, %{"type" => "dispatch", "event" => event.name, "target" => id})
+
+    Process.put(
+      :hsm_conformance_last_dispatch_queued,
+      match?(%{started?: true}, Map.get(env.machines, id))
+    )
 
     if Map.has_key?(env.machines, id) do
       machine = Map.fetch!(env.machines, id)
@@ -2508,6 +2558,11 @@ defmodule Mix.Tasks.Hsm.Conformance do
        ) do
     event = event_from_value(event)
     append_trace(trace, %{"type" => "dispatch", "event" => event.name, "target" => id})
+
+    Process.put(
+      :hsm_conformance_last_dispatch_queued,
+      match?(%{started?: true}, Map.get(env.machines, id))
+    )
 
     if Map.has_key?(env.machines, id) do
       machine = Map.fetch!(env.machines, id)
@@ -2675,6 +2730,7 @@ defmodule Mix.Tasks.Hsm.Conformance do
       )
     end
 
+    assert_dispatch_queued(expect)
     assert_expected_error(expect)
   end
 
@@ -2717,7 +2773,22 @@ defmodule Mix.Tasks.Hsm.Conformance do
       )
     end
 
+    assert_dispatch_queued(expect)
     assert_expected_error(expect)
+  end
+
+  defp assert_dispatch_queued(expect) do
+    if Map.has_key?(expect, "queued") do
+      expected = expect["queued"]
+      actual = Process.get(:hsm_conformance_last_dispatch_queued)
+
+      unless is_boolean(expected) and actual == expected do
+        throw(
+          {:assertion,
+           "dispatch queued mismatch: expected #{inspect(expected)}, got #{inspect(actual)}"}
+        )
+      end
+    end
   end
 
   defp assert_expected_error(%{"error" => expected}) do
